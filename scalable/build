@@ -1,0 +1,7 @@
+make clean
+for i in fl ra sa saca saea zz; do
+    cp inc/$i.h freelist.h
+    make
+    mv krp.ko bin/krp_$i.ko
+done
+rm -rf freelist.h
