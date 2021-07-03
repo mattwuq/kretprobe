@@ -13,6 +13,7 @@ as possible, i.e. performance and correctness. Tests of kretprobe on 96-CORE
 ARM64 show the biggest gain as 466.7x of the original freelist throughput.
 The raw queue throughput can be 1,975 times of freelist. Here are the results:
 
+```c
 Ubuntu 20.04, 5.13.0-rc6 (XEON E5-2660V3 2.4G, DDR4 2133MT/s, 10 CORES/20 THREADS):
                 1x        2x        4x        8x        10x        16x        20x        32x        40x
 freelist: 13086080  22493637  32773854  20129772   18455899   18435561   18980332   18988603   18991334	
@@ -22,6 +23,8 @@ Ubuntu 21.04 - 5.12.10 QEMU 96 CORES (HUAWEI TaiShan 2280V2  KP920 96 CORES 2.6G
                   1x          2x          4x          8x          16x          24x          48x            96x           192x
 freelist: 17,233,640  10,296,664   8,095,309   6,993,545    5,050,817    4,295,283    3,382,013      2,738,050      2,743,345
 array:    19,360,905  37,395,225  56,417,463  10,020,136  209,876,209  328,940,014  632,754,916  1,277,862,473  1,169,076,739
+
+```
 
 Linear scalability is still not available,  limited by the following two
 considerations:
@@ -39,3 +42,9 @@ considerations:
 With a pre-built kernel, further performance tuning can be done by increasing
 maxactive when registering kretprobe. Tests show 4x cores number is a fair
 choice for both performance and memory efficiency.
+
+# Performance comparison tests:
+
+![](./doc/kretprobe-perf-X86.png)
+
+![](./doc/kretprobe-perf-ARM64.png)
