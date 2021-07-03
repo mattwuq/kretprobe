@@ -43,6 +43,9 @@ With a pre-built kernel, further performance tuning can be done by increasing
 maxactive when registering kretprobe. Tests show 4x cores number is a fair
 choice for both performance and memory efficiency.
 
+Huge thanks to my workmates: Chengming Zhou, Muchun Song, Yue Chen for their
+suggestions and remarks.
+
 # Performance comparison tests:
 
 ![](./doc/kretprobe-perf-X86.png)
