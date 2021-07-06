@@ -8,7 +8,7 @@
 struct freelist_slot {
     uint32_t                head;
     uint32_t                tail;
-}
+};
 
 struct freelist_head {
     struct freelist_slot    fh_head ____cacheline_aligned_in_smp;
@@ -29,7 +29,8 @@ static inline int freelist_init(struct freelist_head *list, int max)
     uint32_t bits = ilog2(roundup_pow_of_two(max)), size;
     list->fh_size = 1UL << bits;
     list->fh_mask = list->fh_size - 1;
-    list->fh_head = list->fh_tail = 0;
+    list->fh_head.head = list->fh_head.tail = 0;
+    list->fh_tail.head = list->fh_tail.tail = 0;
     size = list->fh_size * sizeof(struct freelist_node *);
     list->fh_ents = (struct freelist_node **)kzalloc(size, GFP_KERNEL);
     if (!list->fh_ents)
@@ -40,44 +41,39 @@ static inline int freelist_init(struct freelist_head *list, int max)
 
 static inline int freelist_add(struct freelist_node *node, struct freelist_head *list)
 {
-    uint32_t tail = READ_ONCE(list->fh_tail.head);
+    uint32_t tail = READ_ONCE(list->fh_tail.head), next;
 
     while (1) {
         if (try_cmpxchg(&list->fh_tail.head, &tail, tail + 1)) {
             WRITE_ONCE(FL_ENT(list, tail), node);
-            if (try_cmpxchg(&list->fh_tail.tail, &tail, tail + 1)) {
-                return 0;
-            } else {
-                BUG();
-            }
+            do {
+                next = tail;
+            } while (!try_cmpxchg(&list->fh_tail.tail, &next, next + 1));
+            return 0;
         }
     }
 
     return -1;
 }
 
-#define freelist_try_add freelist_add
+#define freelist_try_add  freelist_add
 
 static inline struct freelist_node *freelist_try_get(struct freelist_head *list)
 {
     struct freelist_node *node;
-    uint32_t head, tail;
+    uint32_t head, next;
 
     do {
-        struct freelist_node *item;
-
         head = READ_ONCE(list->fh_head.head);
-        if (READ_ONCE(list->fh_tail.tail) - head >= list->fh_size)
+        if (READ_ONCE(list->fh_tail.tail) == head)
             break;
 
         if (try_cmpxchg(&list->fh_head.head, &head, head + 1)) {
             node = READ_ONCE(FL_ENT(list, head));
-            if (try_cmpxchg(&list->fh_head.tail, &head, head + 1)) {
-            	return node;
-            } else {
-                printk("BUG: failed to move head forward!\n");
-		BUG();
-	    }
+            do {
+                next =  head;
+            } while (!try_cmpxchg(&list->fh_head.tail, &next, next + 1));
+            return node;
         }
     } while (1);
 
