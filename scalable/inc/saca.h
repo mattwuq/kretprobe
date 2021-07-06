@@ -1,4 +1,7 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+#ifndef FREELIST_H
+#define FREELIST_H
+
 #include <linux/slab.h>
 #include <linux/atomic.h>
 
@@ -25,16 +28,17 @@ struct freelist_head {
 
 static inline int freelist_init(struct freelist_head *list, int max)
 {
-	uint32_t size, cores = num_possible_cpus();
+	uint32_t size, cores = roundup_pow_of_two(num_possible_cpus());
 
 	list->fh_used = 0;
 	list->fh_step = ilog2(L1_CACHE_BYTES / sizeof(void *));
 	if (max < (cores << list->fh_step))
-		list->fh_size = roundup_pow_of_two(cores) << list->fh_step;
+		list->fh_size = cores << list->fh_step;
 	else
 		list->fh_size = roundup_pow_of_two(max);
 	list->fh_mask = list->fh_size - 1;
 	list->fh_bits = (uint16_t)ilog2(list->fh_size);
+	list->fh_step = list->fh_bits - (uint16_t)ilog2(cores);
 	size = list->fh_size * sizeof(struct freelist_node *);
 	list->fh_ents = kzalloc(size, GFP_KERNEL);
 	if (!list->fh_ents)
@@ -45,8 +49,10 @@ static inline int freelist_init(struct freelist_head *list, int max)
 
 static inline int freelist_try_add(struct freelist_node *node, struct freelist_head *list)
 {
-	uint32_t i, hint = list->fh_used << list->fh_step;
+	uint32_t i, hint;
 
+	hint = (list->fh_used << list->fh_step) +
+	       (list->fh_used >> (list->fh_bits - list->fh_step));
 	for (i = 0; i < list->fh_size; i++) {
 		struct freelist_node *item = NULL;
 		uint32_t slot = (i + hint) & list->fh_mask;
@@ -116,3 +122,4 @@ static inline void freelist_destroy(struct freelist_head *list, void *context,
 		list->fh_ents = NULL;
 	}
 }
+#endif /* FREELIST_H */
