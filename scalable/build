@@ -1,6 +1,6 @@
 make clean
 for i in pc cq fl ra sa saca saea zz; do
-    echo #include \"inc/$i.h\" > freelist.h
+    echo \#include \"inc/$i.h\" > freelist.h
     cat freelist.h
     make
     mv krp.ko bin/krp_$i.ko
