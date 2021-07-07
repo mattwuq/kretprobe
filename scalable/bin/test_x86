@@ -2,7 +2,7 @@
 echo preempt=0 cycle=0
 for l in 10 16 20 32 40 64; do
     for j in 1 2 4 6 8 10 12 14 16 18 20; do
-        for i in zz fl ra sa saca saea; do
+        for i in zz fl ra sa saca pc saea cq; do
             for k in 1 2 3 4 5; do
                 echo insmod krp_$i.ko interval=10 threads=$j cycleus=0 max=$l preempt=0
                 dmesg -c > /dev/null; insmod krp_$i.ko interval=10 threads=$j cycleus=0 max=$l preempt=0 2>&1; dmesg -c
@@ -14,7 +14,7 @@ done
 echo preempt=1 cycle=0
 for l in 10 16 20 32 40 64; do
     for j in 1 2 4 6 8 10 12 14 16 18 20; do
-        for i in zz fl ra sa saca saea; do
+        for i in zz fl ra sa saca pc saea; do
             for k in 1 2 3 4 5; do
                 echo insmod krp_$i.ko interval=10 threads=$j cycleus=0 max=$l preempt=1
                 dmesg -c > /dev/null; insmod krp_$i.ko interval=10 threads=$j cycleus=0 max=$l preempt=1 2>&1; dmesg -c
@@ -26,7 +26,7 @@ done
 echo preempt=1 cycle=1
 for l in 10 16 20 32 40 64; do
     for j in 1 2 4 6 8 10 12 14 16 18 20; do
-        for i in zz fl ra sa saca saea; do
+        for i in zz fl ra sa saca pc saea; do
             for k in 1 2 3 4 5; do
                 echo insmod krp_$i.ko interval=10 threads=$j cycleus=1 max=$l preempt=1
                 dmesg -c > /dev/null; insmod krp_$i.ko interval=10 threads=$j cycleus=1 max=$l preempt=1 2>&1; dmesg -c
