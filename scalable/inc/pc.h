@@ -276,6 +276,9 @@ static inline void freelist_destroy(struct freelist_head *s, void *context,
 			release(context, node);
 	}
 	//raw_spin_unlock(&s->extralist.lock);
+
+	free_percpu(s->freelist);
+        s->freelist = NULL;
 }
 
 #endif /* __PC_FREELIST_H__ */

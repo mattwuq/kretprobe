@@ -68,7 +68,6 @@ static inline int freelist_add(struct freelist_node *node, struct freelist_head 
         
         struct freelist_node *item = NULL;
         if (try_cmpxchg_release(&list->fh_ents->ents[slot].node, &item, node)) {
-            atomic_inc(&list->fh_used);
             break;
         }
         slot = (slot + 1) & list->fh_mask; 
@@ -88,7 +87,7 @@ static inline struct freelist_node *freelist_try_get(struct freelist_head *list)
         struct freelist_node *item = READ_ONCE(list->fh_ents->ents[slot].node);
         if (item && try_cmpxchg_release(&list->fh_ents->ents[slot].node, &item, NULL)) {
             node = item;
-	    list->fh_ents->ents[slot].slot = slot;
+            list->fh_ents->ents[slot].slot = slot;
             break;
         }
     }
@@ -107,7 +106,6 @@ static inline void freelist_destroy(struct freelist_head *list, void *context, i
             if (try_cmpxchg_release(&list->fh_ents->ents[slot].node, &item, NULL)) {
                 if (release)
                     release(context, item);
-                atomic_dec(&list->fh_used);
                 break;
             }
         }
