@@ -1,5 +1,5 @@
 make clean
-for i in pc cq fl ra sa saca saea zz; do
+for i in pc cq fl flpc sapc ra sa sah saca saea zz; do
     echo \#include \"inc/$i.h\" > freelist.h
     cat freelist.h
     make

@@ -24,6 +24,7 @@
 #include "freelist.h"
 
 #define RS_NR_CPUS  (96)
+#define RS_BULK_MAX (96)
 
 /*
  * global variables
@@ -57,14 +58,15 @@ static long interval = 1;                    /* seconds */
 static long threads  = 1;
 static int  preempt  = 0;
 static int  max = 0;
+static int  bulk = 1;
 
 module_param(cycleus,  long, S_IRUSR|S_IRGRP|S_IROTH);
 module_param(hrtimer,  long, S_IRUSR|S_IRGRP|S_IROTH);
 module_param(interval, long, S_IRUSR|S_IRGRP|S_IROTH);
 module_param(threads,  long, S_IRUSR|S_IRGRP|S_IROTH);
 module_param(max,      int,  S_IRUSR|S_IRGRP|S_IROTH);
+module_param(bulk,     int,  S_IRUSR|S_IRGRP|S_IROTH);
 module_param(preempt,  int,  S_IRUSR|S_IRGRP|S_IROTH);
-
 
 int rs_init_ring(int maxactive)
 {
@@ -181,7 +183,23 @@ static void rs_stop_hrtimer(struct hrtimer *hrt)
 uint32_t rs_reset_slot(int cpu);
 static int rs_task_exec(void *arg)
 {
+        struct freelist_node  *stack[64] = {0};
+	struct freelist_node **nodes = NULL;
+        int nns = 0;
 	int rc = atomic_inc_return(&g_rs_ntasks);
+
+        if (bulk > 64) {
+	        nodes = kzalloc(sizeof(void *) * bulk, GFP_KERNEL);
+	        if (nodes) {
+                        nns = bulk;
+                } else {
+                        nns = 64;
+                        nodes = stack;
+                }
+	} else {
+                nns = bulk;
+                nodes = stack;
+        }
 
 	if (rc == 1) {
 		g_rs_ns_start = ktime_get_ns();
@@ -193,15 +211,19 @@ static int rs_task_exec(void *arg)
 
 	while (!kthread_should_stop()) {
 
-		struct freelist_node *ri;
+		int n;
 
 		if (g_rs_task_stop)
 			break;
 
-		ri = rs_ring_pop();
+		for (n = 0; n < nns; n++)
+			nodes[n] = rs_ring_pop();
 		if (cycleus)
 			rs_usleep(cycleus);
-		rs_ring_push(ri);
+		for (n = 0; n < nns; n++) {
+			if (nodes[n])
+				rs_ring_push(nodes[n]);
+		}
 	}
 
 quit:
@@ -209,6 +231,9 @@ quit:
 		g_rs_ns_stop = ktime_get_ns();
 		complete(&g_rs_task_exit);
 	}
+
+	if (nodes && nodes != stack)
+		kfree(nodes);
 
 	return 0;
 }
@@ -303,6 +328,9 @@ static void __init rs_check_params(void)
 		hrtimer = 1000000;                    /* 1 milliisecond */
 	if (hrtimer > 1000000000UL * 60)
 		hrtimer = 1000000000UL * 60;
+
+	if (bulk <= 0)
+		bulk = 1;
 
 	if (!threads)
 		threads = 1;
