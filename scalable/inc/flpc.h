@@ -4,6 +4,9 @@
 
 #include <linux/atomic.h>
 
+
+#define QUEUE_METHOD "flpc"
+
 /*
  * Copyright: cameron@moodycamel.com
  *
@@ -66,16 +69,17 @@ static inline void __freelist_add(struct freelist_node *node, struct percpu_free
 	 */
 	struct freelist_node *head = READ_ONCE(list->head);
 
+	atomic_set_release(&node->refs, 1);
+
 	for (;;) {
 		WRITE_ONCE(node->next, head);
-		atomic_set_release(&node->refs, 1);
 
 		if (!try_cmpxchg_release(&list->head, &head, node)) {
 			/*
 			 * Hmm, the add failed, but we can only try again when
 			 * the refcount goes back to zero.
 			 */
-			if (atomic_fetch_add_release(REFS_ON_FREELIST - 1, &node->refs) == 1)
+			if (atomic_fetch_add(REFS_ON_FREELIST - 1, &node->refs) == 1)
 				continue;
 		}
 		return;
@@ -131,6 +135,7 @@ static inline struct freelist_node *_freelist_try_get(struct percpu_freelist *li
 		prev = head;
 		refs = atomic_read(&head->refs);
 		if ((refs & REFS_MASK) == 0 ||
+		     /* possible ABA */
 		    !atomic_try_cmpxchg_acquire(&head->refs, &refs, refs+1)) {
 			head = smp_load_acquire(&list->head);
 			continue;

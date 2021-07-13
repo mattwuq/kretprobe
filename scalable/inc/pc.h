@@ -6,6 +6,8 @@
 #include <linux/spinlock.h>
 #include <linux/percpu.h>
 
+#define QUEUE_METHOD "pc"
+
 struct pc_freelist_head {
 	struct pc_freelist_node *first;
 	raw_spinlock_t lock;

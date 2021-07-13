@@ -4,6 +4,8 @@
 
 #include <linux/atomic.h>
 
+#define QUEUE_METHOD "fl"
+
 /*
  * Copyright: cameron@moodycamel.com
  *

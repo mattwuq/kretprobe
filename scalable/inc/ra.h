@@ -6,6 +6,8 @@
 #include <linux/atomic.h>
 #include <linux/random.h>
 
+#define QUEUE_METHOD "ra"
+
 struct freelist_c1_aligned {
     struct freelist_node *node;
     uint32_t              slot;

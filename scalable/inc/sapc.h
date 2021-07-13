@@ -5,6 +5,8 @@
 #include <linux/slab.h>
 #include <linux/atomic.h>
 
+#define QUEUE_METHOD "sapc"
+
 /*
  * lockless queue for kretprobe instances
  *
@@ -19,20 +21,20 @@ struct freelist_node {
 };
 
 struct freelist_slot {
-	uint32_t                fs_head;
-	uint32_t                fs_tail;
-	uint32_t                fs_size;
-	uint32_t                fs_mask;
-	struct freelist_node  **fs_ents;
-	struct freelist_head   *fs_list;
+	uint32_t                fs_head;	/* */
+	uint32_t                fs_tail;	/* */
+	uint32_t                fs_size;	/* */
+	uint32_t                fs_mask;	/* */
+	uint32_t               *fs_ages;
+	struct freelist_node  **fs_ents;	/* */
 };
 
 struct freelist_head {
 	uint32_t                fh_size;	/* rounded to power of 2 */
-	uint32_t                fh_used;
+	uint32_t                fh_used;	/* */
 	uint32_t                fh_cpus;	/* num of possible cores */
-	void                   *fh_buff;
-	struct freelist_slot  **fh_slot;
+	void                   *fh_buff;	/* */
+	struct freelist_slot  **fh_slot;	/* */
 };
 
 static inline int freelist_init(struct freelist_head *list, int max)
@@ -41,22 +43,23 @@ static inline int freelist_init(struct freelist_head *list, int max)
 
 	size = roundup_pow_of_two(max);
 	mask = size - 1;
-	size = size * sizeof(void *) + sizeof(struct freelist_slot);
+	size = (sizeof(struct freelist_slot) + sizeof(uint32_t) +
+	        sizeof(struct freelist_node *)) * size;
 	size = ALIGN(size, L1_CACHE_BYTES);
-	list->fh_size = (size + sizeof(void *)) * cpus;
+	list->fh_size = (size + sizeof(struct freelist_slot *)) * cpus;
 	list->fh_buff = kzalloc(list->fh_size, GFP_KERNEL);
 	if (!list->fh_buff)
 		return -ENOMEM;
-	list->fh_slot = (struct freelist_slot **)((char *)list->fh_buff + size * cpus);
+	list->fh_slot = (void *)((char *)list->fh_buff + size * cpus);
 	list->fh_cpus = cpus;
 	for (i = 0; i < cpus; i++) {
-		list->fh_slot[i] = (struct freelist_slot *)((char *)list->fh_buff +
-	                                                    i * size);
-		list->fh_slot[i]->fs_mask = mask;
-		list->fh_slot[i]->fs_size = mask + 1;
-		list->fh_slot[i]->fs_ents = (struct freelist_node  **)((char *)list->fh_slot[i]
-		                             + sizeof(struct freelist_slot));
-		list->fh_slot[i]->fs_list = list;
+		struct freelist_slot **slot = list->fh_slot;
+		slot[i] = (void *)((char *)list->fh_buff + i * size);
+		slot[i]->fs_mask = mask;
+		slot[i]->fs_size = mask + 1;
+		slot[i]->fs_ages = (uint32_t *)((char *)slot[i] +
+				    sizeof(struct freelist_slot));
+		slot[i]->fs_ents = (void *) &slot[i]->fs_ages[cpus];
 	}
 
 	return 0;
@@ -64,14 +67,10 @@ static inline int freelist_init(struct freelist_head *list, int max)
 
 static inline int __try_add_percpu(struct freelist_node *node, struct freelist_slot *slot)
 {
-	uint32_t tail = (atomic_inc_return((atomic_t *)&slot->fs_tail) - 1) & slot->fs_mask;
-        while (1) {
-		struct freelist_node *item = NULL;
-		if (try_cmpxchg_release(&slot->fs_ents[tail], &item, node)) {
-			break;
-		}
-	}
+	uint32_t tail = atomic_inc_return((atomic_t *)&slot->fs_tail) - 1;
 
+	WRITE_ONCE(slot->fs_ents[tail], node);
+	smp_store_release(&slot->fs_ages[tail], tail);
 	return 0;
 }
 
@@ -93,17 +92,10 @@ static inline int freelist_try_add(struct freelist_node *node, struct freelist_h
 
 static inline int __add_percpu(struct freelist_node *node, struct freelist_slot *slot)
 {
-	uint32_t tail = (atomic_inc_return((atomic_t *)&slot->fs_tail) - 1) & slot->fs_mask ;
+	uint32_t tail = atomic_inc_return((atomic_t *)&slot->fs_tail) - 1;
 
-	smp_store_release(&slot->fs_ents[tail], node);
-	return 0;
-
-        do {
-		struct freelist_node *item = NULL;
-		if (try_cmpxchg_release(&slot->fs_ents[tail], &item, node)) {
-			break;
-		}
-	} while (1);
+	WRITE_ONCE(slot->fs_ents[tail & slot->fs_mask], node);
+	smp_store_release(&slot->fs_ages[tail & slot->fs_mask], tail);
 	return 0;
 }
 
@@ -111,6 +103,8 @@ static inline int freelist_add(struct freelist_node *node, struct freelist_head 
 {
 	uint32_t cpu = raw_smp_processor_id();
 
+	// if (!node)
+	//	return -EINVAL;
  	do {
 		if (!__add_percpu(node, list->fh_slot[cpu])) {
 			return 0;
@@ -125,27 +119,25 @@ static inline int freelist_add(struct freelist_node *node, struct freelist_head 
 
 static inline struct freelist_node *__try_get_percpu(struct freelist_slot *slot)
 {
-	uint32_t head;
+	uint32_t head = smp_load_acquire(&slot->fs_head);
 
-	while ((head = READ_ONCE(slot->fs_head)) != READ_ONCE(slot->fs_tail)) {
-		struct freelist_node **node = &slot->fs_ents[head & slot->fs_mask];
-		struct freelist_node *item = READ_ONCE(*node);
-		if (item) {
-			if (try_cmpxchg_release(node, &item, NULL)) {
-
-				smp_store_release(&slot->fs_head, head + 1);
-#if 0
-				uint32_t next;
-				do {
-					next = head;
-				} while (!try_cmpxchg_release(&slot->fs_head, &next, head + 1));
-#endif
-				return item;
+	while (head != READ_ONCE(slot->fs_tail)) {
+		uint32_t id = head & slot->fs_mask;
+		uint32_t *age = &slot->fs_ages[id];
+		prefetch(&slot->fs_ents[id]);
+		if (try_cmpxchg_acquire(age, &head, 0)) {
+			struct freelist_node *node;
+			node = READ_ONCE(slot->fs_ents[id]);
+			if (!node) {
+				BUG();
 			}
+			smp_store_release(&slot->fs_head, head + 1);
+			return node;
 		}
 		/* break if it's in irq/softirq or nmi */
 		if (irq_count())
 			break;
+		head = READ_ONCE(slot->fs_head);
 	}
 
 	return NULL;

@@ -5,6 +5,7 @@
 #include <linux/slab.h>
 #include <linux/atomic.h>
 
+#define QUEUE_METHOD "saea"
 
 struct freelist_c1_aligned {
     union {

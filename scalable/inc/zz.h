@@ -5,6 +5,8 @@
 #include <linux/slab.h>
 #include <linux/atomic.h>
 
+#define QUEUE_METHOD "zz"
+
 struct freelist_head {
     uint32_t                fh_size;
     uint32_t                fh_mask;

@@ -5,6 +5,8 @@
 #include <linux/slab.h>
 #include <linux/atomic.h>
 
+#define QUEUE_METHOD "sah"
+
 /*
  * lockless queue for kretprobe instances
  *

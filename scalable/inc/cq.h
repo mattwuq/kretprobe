@@ -5,6 +5,8 @@
 #include <linux/slab.h>
 #include <linux/atomic.h>
 
+#define QUEUE_METHOD "cq"
+
 struct freelist_slot {
     uint32_t                head;
     uint32_t                tail;

@@ -5,6 +5,9 @@
 #include <linux/slab.h>
 #include <linux/atomic.h>
 
+
+#define QUEUE_METHOD "saca"
+
 /*
  * lockless queue for kretprobe instances
  *

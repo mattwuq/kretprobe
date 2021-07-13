@@ -250,7 +250,7 @@ static int rs_cpu_online(unsigned int cpu)
 	thread = kthread_create_on_node(rs_task_exec,
 					(void *) (long)cpu,
 					cpu_to_node(cpu),
-					"krp producer");
+					QUEUE_METHOD);
 	if (IS_ERR(thread)) {
 		rc = PTR_ERR(thread);
 		goto errorout;
@@ -350,8 +350,8 @@ static void rs_cleanup(void)
 		nhits += atomic_long_read(&g_rs_tasks[i].nhits);
 		nmiss += atomic_long_read(&g_rs_tasks[i].nmiss);
 	}
-	printk("threads: %2lu preempt: %d max: %4d cycle: %2lu delta: %llu  hits: %13llu missed: %llu\n", 
-		threads, preempt, max, cycleus, g_rs_ns_stop - g_rs_ns_start, nhits, nmiss);
+	printk("%s:\tthreads:%2lu preempt:%d max:%4d cycle:%2lu bulk:%d delta: %llu  hits: %13llu missed: %llu\n", 
+		QUEUE_METHOD, threads, preempt, max, cycleus, bulk, g_rs_ns_stop - g_rs_ns_start, nhits, nmiss);
 }
 
 static int __init rs_mod_init(void)
