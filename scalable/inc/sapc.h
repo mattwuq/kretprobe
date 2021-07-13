@@ -59,7 +59,7 @@ static inline int freelist_init(struct freelist_head *list, int max)
 		slot[i]->fs_size = mask + 1;
 		slot[i]->fs_ages = (uint32_t *)((char *)slot[i] +
 				    sizeof(struct freelist_slot));
-		slot[i]->fs_ents = (void *) &slot[i]->fs_ages[cpus];
+		slot[i]->fs_ents = (void *) &slot[i]->fs_ages[mask + 1];
 	}
 
 	return 0;
