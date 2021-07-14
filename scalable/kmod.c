@@ -21,7 +21,44 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 
+#ifndef try_cmpxchg
+#define try_cmpxchg(_ptr, _oldp, _new) \
+({ \
+        typeof(*(_ptr)) *___op = (_oldp), ___o = *___op, ___r; \
+        ___r = arch_cmpxchg((_ptr), ___o, (_new)); \
+        if (unlikely(___r != ___o)) \
+                *___op = ___r; \
+        likely(___r == ___o); \
+})
+#endif /* try_cmpxchg */
+
+#ifndef try_cmpxchg_acquire
+#define try_cmpxchg_acquire(_ptr, _oldp, _new) \
+({ \
+        typeof(*(_ptr)) *___op = (_oldp), ___o = *___op, ___r; \
+        ___r = arch_cmpxchg_acquire((_ptr), ___o, (_new)); \
+        if (unlikely(___r != ___o)) \
+                *___op = ___r; \
+        likely(___r == ___o); \
+})
+#endif /* try_cmpxchg_acquire */
+
+#ifndef try_cmpxchg_release
+#define try_cmpxchg_release(_ptr, _oldp, _new) \
+({ \
+        typeof(*(_ptr)) *___op = (_oldp), ___o = *___op, ___r; \
+        ___r = arch_cmpxchg_release((_ptr), ___o, (_new)); \
+        if (unlikely(___r != ___o)) \
+                *___op = ___r; \
+        likely(___r == ___o); \
+})
+#endif
+
 #include "freelist.h"
+
+/*
+ * global definitions
+ */
 
 #define RS_NR_CPUS  (96)
 #define RS_BULK_MAX (96)
@@ -68,9 +105,15 @@ module_param(max,      int,  S_IRUSR|S_IRGRP|S_IROTH);
 module_param(bulk,     int,  S_IRUSR|S_IRGRP|S_IROTH);
 module_param(preempt,  int,  S_IRUSR|S_IRGRP|S_IROTH);
 
+int *g_freelist_items = NULL;
+
 int rs_init_ring(int maxactive)
 {
-    int i;
+	int i;
+
+	g_freelist_items = kzalloc(sizeof(int) * maxactive, GFP_KERNEL);
+	if (!g_freelist_items)
+		return -ENOMEM;
 
 	if (freelist_init(&g_rs_freelist, maxactive)) {
 		printk("rs_init_ring: failed to init freelist.\n");
@@ -78,11 +121,18 @@ int rs_init_ring(int maxactive)
 	}
 
 	for (i = 0; i < maxactive; i++) {
-        struct freelist_node *ri = kzalloc(sizeof(struct freelist_node) + 16, GFP_KERNEL);
-		if (ri == NULL || freelist_try_add(ri, &g_rs_freelist)) {
-			if (ri)
-				kfree(ri);
-			return -ENOMEM;
+		if (strstr(QUEUE_METHOD, "fl") || !strcmp(QUEUE_METHOD, "pc")) {
+			struct freelist_node *ri;
+			ri = kzalloc(sizeof(struct freelist_node) + 16, GFP_KERNEL);
+			if (ri == NULL || freelist_try_add(ri, &g_rs_freelist)) {
+				if (ri)
+					 kfree(ri);
+			}
+		} else {
+			struct freelist_node *ri = ((void *) -1) - i;
+			if (freelist_try_add(ri, &g_rs_freelist))
+				return -ENOMEM;
+			g_freelist_items[i] = 1;
 		}
 	}
 
@@ -91,7 +141,20 @@ int rs_init_ring(int maxactive)
 
 static int release_ri(void *context, void *node)
 {
-	kfree(node);
+	if (strstr(QUEUE_METHOD, "fl") || !strcmp(QUEUE_METHOD, "pc")) {
+		kfree(node);
+	} else {
+		int id = (int)(((void *)-1) - node);
+		if (id >=0 && id < max) {
+			if (g_freelist_items[id]) {
+				g_freelist_items[id] = 0;
+			} else {
+				printk("doulbe free node: %px id: %d\n", node, id);
+			}
+		} else {
+			printk("wrong node: %px id: %d\n", node, id);
+		}
+	}
 	if (context)
 		(*((int *)context))++;
 	return 0;
@@ -101,6 +164,9 @@ void rs_fini_ring(void)
 {
 	int count = 0;
 	freelist_destroy(&g_rs_freelist, &count, release_ri);
+
+	if (g_freelist_items)
+		kfree(g_freelist_items);
 }
 
 int rs_usleep(long us)
