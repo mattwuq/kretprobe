@@ -20,13 +20,20 @@ struct freelist_node {
 	struct freelist_node   *next;
 };
 
+struct freelist_item {
+	struct freelist_node   *node;
+	uint32_t		age;
+#if __BITS_PER_LONG == 64
+	uint32_t                reserved;
+#endif
+};
 struct freelist_slot {
 	uint32_t                fs_head;	/* */
 	uint32_t                fs_tail;	/* */
 	uint32_t                fs_size;	/* */
 	uint32_t                fs_mask;	/* */
 	uint32_t               *fs_ages;
-	struct freelist_node  **fs_ents;	/* */
+	struct freelist_item   *fs_ents;	/* */
 };
 
 struct freelist_head {
@@ -43,8 +50,7 @@ static inline int freelist_init(struct freelist_head *list, int max)
 
 	size = roundup_pow_of_two(max);
 	mask = size - 1;
-	size = (sizeof(struct freelist_slot) + sizeof(uint32_t) +
-	        sizeof(struct freelist_node *)) * size;
+	size = sizeof(struct freelist_slot) + sizeof(struct freelist_item) * size;
 	size = ALIGN(size, L1_CACHE_BYTES);
 	list->fh_size = (size + sizeof(struct freelist_slot *)) * cpus;
 	list->fh_buff = kzalloc(list->fh_size, GFP_KERNEL);
@@ -57,9 +63,8 @@ static inline int freelist_init(struct freelist_head *list, int max)
 		slot[i] = (void *)((char *)list->fh_buff + i * size);
 		slot[i]->fs_mask = mask;
 		slot[i]->fs_size = mask + 1;
-		slot[i]->fs_ages = (uint32_t *)((char *)slot[i] +
+		slot[i]->fs_ents = (void *)((char *)slot[i] +
 				    sizeof(struct freelist_slot));
-		slot[i]->fs_ents = (void *) &slot[i]->fs_ages[mask + 1];
 	}
 
 	return 0;
@@ -69,8 +74,8 @@ static inline int __try_add_percpu(struct freelist_node *node, struct freelist_s
 {
 	uint32_t tail = atomic_inc_return((atomic_t *)&slot->fs_tail) - 1;
 
-	WRITE_ONCE(slot->fs_ents[tail], node);
-	smp_store_release(&slot->fs_ages[tail], tail);
+	WRITE_ONCE(slot->fs_ents[tail].node, node);
+	smp_store_release(&slot->fs_ents[tail].age, tail);
 	return 0;
 }
 
@@ -94,8 +99,8 @@ static inline int __add_percpu(struct freelist_node *node, struct freelist_slot 
 {
 	uint32_t tail = atomic_inc_return((atomic_t *)&slot->fs_tail) - 1;
 
-	WRITE_ONCE(slot->fs_ents[tail & slot->fs_mask], node);
-	smp_store_release(&slot->fs_ages[tail & slot->fs_mask], tail);
+	WRITE_ONCE(slot->fs_ents[tail & slot->fs_mask].node, node);
+	smp_store_release(&slot->fs_ents[tail & slot->fs_mask].age, tail);
 	return 0;
 }
 
@@ -119,15 +124,14 @@ static inline int freelist_add(struct freelist_node *node, struct freelist_head 
 
 static inline struct freelist_node *__try_get_percpu(struct freelist_slot *slot)
 {
-	uint32_t head = smp_load_acquire(&slot->fs_head);
+	uint32_t head = smp_load_acquire(&slot->fs_head), times = 0;
 
 	while (head != READ_ONCE(slot->fs_tail)) {
 		uint32_t id = head & slot->fs_mask;
-		uint32_t *age = &slot->fs_ages[id];
-		prefetch(&slot->fs_ents[id]);
-		if (try_cmpxchg_acquire(age, &head, 0)) {
+		struct freelist_item *item = &slot->fs_ents[id];
+		if (try_cmpxchg_acquire(&item->age, &head, head - 1)) {
 			struct freelist_node *node;
-			node = READ_ONCE(slot->fs_ents[id]);
+			node = READ_ONCE(item->node);
 			if (!node) {
 				BUG();
 			}
@@ -137,6 +141,12 @@ static inline struct freelist_node *__try_get_percpu(struct freelist_slot *slot)
 		/* break if it's in irq/softirq or nmi */
 		if (irq_count())
 			break;
+		if (times++ > 100000) {
+			times = 0;
+			printk("%u: head: %u/%u tail: %u age: %u node: %px/%px\n",
+			       raw_smp_processor_id(), head, READ_ONCE(slot->fs_head),
+			       READ_ONCE(slot->fs_tail), item->age, item->node, item);
+		}
 		head = READ_ONCE(slot->fs_head);
 	}
 
