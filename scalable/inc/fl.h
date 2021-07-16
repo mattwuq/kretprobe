@@ -4,6 +4,7 @@
 
 #include <linux/atomic.h>
 
+
 #define QUEUE_METHOD "fl"
 
 /*
@@ -52,20 +53,19 @@ static inline void __freelist_add(struct freelist_node *node, struct freelist_he
 	 */
 	struct freelist_node *head = READ_ONCE(list->head);
 
-	atomic_set_release(&node->refs, 1);
 	for (;;) {
 		WRITE_ONCE(node->next, head);
+		atomic_set_release(&node->refs, 1);
 
-		if (try_cmpxchg_release(&list->head, &head, node)) {
-			break;
+		if (!try_cmpxchg_release(&list->head, &head, node)) {
+			/*
+			 * Hmm, the add failed, but we can only try again when
+			 * the refcount goes back to zero.
+			 */
+			if (atomic_fetch_add_release(REFS_ON_FREELIST - 1, &node->refs) == 1)
+				continue;
 		}
-
-		/*
-		 * Hmm, the add failed, but we can only try again when
-		 * the refcount goes back to zero.
-		 */
-		if (1 != atomic_fetch_add_unless(&node->refs, REFS_ON_FREELIST - 1, 1))
-			break;
+		return;
 	}
 }
 
