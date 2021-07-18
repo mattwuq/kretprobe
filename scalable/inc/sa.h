@@ -15,6 +15,7 @@
 
 struct freelist_node {
 	struct freelist_node    *next;
+	uint32_t id;
 };
 struct freelist_head {
 	uint32_t                fh_size;	/* rounded to power of 2 */

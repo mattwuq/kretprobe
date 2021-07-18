@@ -22,6 +22,7 @@ struct pc_freelist {
 
 struct pc_freelist_node {
 	struct pc_freelist_node *next;
+	uint32_t id;
 };
 #define freelist_node pc_freelist_node
 

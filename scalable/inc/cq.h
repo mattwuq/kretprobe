@@ -22,6 +22,7 @@ struct freelist_head {
 
 struct freelist_node {
 	struct freelist_node	*next;
+	uint32_t		id;
 };
 
 #define FL_ENT(l, i)  (l)->fh_ents[(i) & (l)->fh_mask]

@@ -18,6 +18,7 @@ struct freelist_head {
 
 struct freelist_node {
     struct freelist_node	*next;
+	uint32_t id;
 };
 
 

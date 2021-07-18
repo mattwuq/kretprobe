@@ -121,13 +121,17 @@ int rs_init_ring(int maxactive)
 	}
 
 	for (i = 0; i < maxactive; i++) {
-		if (strstr(QUEUE_METHOD, "fl") || !strcmp(QUEUE_METHOD, "pc")) {
+		if (strstr(QUEUE_METHOD, "fl") || 0 == strcmp(QUEUE_METHOD, "pc")) {
 			struct freelist_node *ri;
 			ri = kzalloc(sizeof(struct freelist_node) + 16, GFP_KERNEL);
-			if (ri == NULL || freelist_try_add(ri, &g_rs_freelist)) {
+			if (ri == NULL)
+			       continue;
+			ri->id = i + 1;
+			if (freelist_try_add(ri, &g_rs_freelist)) {
 				if (ri)
 					 kfree(ri);
 			}
+			g_freelist_items[i] = 1;
 		} else {
 			struct freelist_node *ri = ((void *) -1) - i;
 			if (freelist_try_add(ri, &g_rs_freelist))
@@ -141,20 +145,27 @@ int rs_init_ring(int maxactive)
 
 static int release_ri(void *context, void *node)
 {
-	if (strstr(QUEUE_METHOD, "fl") || !strcmp(QUEUE_METHOD, "pc")) {
-		kfree(node);
+	struct freelist_node *ri = node;
+	int id;
+
+	if (strstr(QUEUE_METHOD, "fl") || 0 == strcmp(QUEUE_METHOD, "pc")) {
+		id = ri->id - 1;
 	} else {
-		int id = (int)(((void *)-1) - node);
-		if (id >=0 && id < max) {
-			if (g_freelist_items[id]) {
-				g_freelist_items[id] = 0;
-			} else {
-				printk("doulbe free node: %px id: %d\n", node, id);
-			}
-		} else {
-			printk("wrong node: %px id: %d\n", node, id);
-		}
+		id = (int)(((void *)-1) - (void *)node);
+		node = NULL;
 	}
+	if (id >=0 && id < max) {
+		if (g_freelist_items[id]) {
+			g_freelist_items[id] = 0;
+		} else {
+			printk("doulbe free node: %px id: %d\n", node, id);
+			node = NULL;
+		}
+	} else {
+		printk("wrong node: %px id: %d\n", node, id);
+	}
+	if (node)
+		kfree(node);
 	if (context)
 		(*((int *)context))++;
 	return 0;
@@ -177,12 +188,25 @@ int rs_usleep(long us)
 
 static int rs_ring_push(struct freelist_node *ri)
 {
-	int rc;
+	int rc, id;
 
 	if (!ri)
 		return 0;
 
 	get_cpu();
+
+        id = (int)(((void *)-1) - (void *)ri);
+        if (id < 0 || id >= max)
+		id = ri->id - 1;
+	if (id >=0 && id < max) {
+		if (!g_freelist_items[id])
+			g_freelist_items[id] = 1;
+		else
+		        printk("node %px ud: %d  already in.\n", ri, id);
+	} else {
+		printk("wrong node: %px id: %d\n", ri, id);
+        }
+
 	rc = freelist_add(ri, &g_rs_freelist);
 	put_cpu();
 	return rc;
@@ -194,10 +218,22 @@ static struct freelist_node *rs_ring_pop(void)
 
 	get_cpu();
 	ri = freelist_try_get(&g_rs_freelist);
-	if (ri)
+	if (ri) {
+		int id = (int)(((void *)-1) - (void *)ri);
+		if (id < 0 || id >= max)
+			id = ri->id - 1;
+		if (id < 0 || id >= max) {
+			printk("wrong node poped: %px id: %d\n", ri, id);
+		} else {
+			if (g_freelist_items[id])
+				g_freelist_items[id] = 0;
+			else
+				printk("node %px ud: %d was taken.\n", ri, id);
+		}
 		atomic_long_inc(&g_rs_tasks[raw_smp_processor_id()].nhits);
-	else
+	} else {
 		atomic_long_inc(&g_rs_tasks[raw_smp_processor_id()].nmiss);
+	}
 	put_cpu();
 	return ri;
 }

@@ -20,6 +20,7 @@
 
 struct freelist_node {
 	atomic_t		refs;
+	uint32_t		id;
 	struct freelist_node	*next;
 };
 
