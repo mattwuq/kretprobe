@@ -89,8 +89,8 @@ static inline int freelist_init_slots(struct freelist_head *list)
 			return -ENOMEM;
 
 		memset(slot, 0, size);
-		slot->fs_size = list->fh_nents;
-		slot->fs_mask = slot->fs_size - 1;
+		slot->fs_size = nents;
+		slot->fs_mask = nents - 1;
 		slot->fs_ents = (void *)((char *)slot + sizeof(struct freelist_slot));
 		slot->fs_ages = (void *)&slot->fs_ents[slot->fs_size];
 		printk("\tents: %px  ages: %px\n", slot->fs_ents, slot->fs_ages);
@@ -142,6 +142,7 @@ static inline int freelist_init_scattered(struct freelist_head *list, int nrecor
 		nents = nrecords;
 	if (nents < freelist_num_of_items(L1_CACHE_BYTES))
 		nents = freelist_num_of_items(L1_CACHE_BYTES);
+	nents = roundup_pow_of_two(nents);
 	while (nents * cpus < nrecords) {
 		nents = nents << 1;
 	}
