@@ -71,7 +71,7 @@ static inline int freelist_init_slots(struct freelist_head *list)
 		size = sizeof(struct freelist_slot) + sizeof(void *) * nents +
 		       sizeof(uint32_t) * nents + record * nrecords;
 
-		printk("slot %u:\n\trecords: %u * %u  size: %u\n", i, nrecords, record, size);
+		// printk("slot %u:\n\trecords: %u * %u  size: %u\n", i, nrecords, record, size);
 		if (0 == i) {
 			if ((list->fh_gfp_flags & GFP_ATOMIC) || size < PAGE_SIZE)
 				list->fh_vmem = 0;
@@ -89,18 +89,18 @@ static inline int freelist_init_slots(struct freelist_head *list)
 			return -ENOMEM;
 
 		memset(slot, 0, size);
-		slot->fs_size = nents;
-		slot->fs_mask = nents - 1;
+		slot->fs_size = list->fh_nents;
+		slot->fs_mask = slot->fs_size - 1;
 		slot->fs_ents = (void *)((char *)slot + sizeof(struct freelist_slot));
 		slot->fs_ages = (void *)&slot->fs_ents[slot->fs_size];
-		printk("\tents: %px  ages: %px\n", slot->fs_ents, slot->fs_ages);
+		// printk("\tents: %px  ages: %px\n", slot->fs_ents, slot->fs_ages);
 		for (j = 0; record && j < nrecords; j++) {
 			slot->fs_ents[slot->fs_tail] = (void *)&slot->fs_ages[slot->fs_size] +
 						       j * record;
 			slot->fs_ages[slot->fs_tail] = slot->fs_tail;
 			slot->fs_tail++;
-			printk("\trecord %u/%u: age: %u node: %px\n", j, slot->fs_tail - 1,
-				 slot->fs_ages[j], slot->fs_ents[j]);
+			// printk("\trecord %u/%u: age: %u node: %px\n", j, slot->fs_tail - 1,
+			//	 slot->fs_ages[j], slot->fs_ents[j]);
 		}
 		list->fh_slots[i] = slot;
 	}
@@ -137,11 +137,11 @@ static inline int freelist_init_scattered(struct freelist_head *list, int nrecor
 
 	/* caculate per-cpu slot size and num of pre-allocated items */
 	if (!asym)
-		nents = nrecords / asym;
+		nents = nrecords / cpus;
 	else
 		nents = nrecords;
-	if (nents < freelist_num_of_items(L1_CACHE_BYTES))
-		nents = freelist_num_of_items(L1_CACHE_BYTES);
+	if (nents < freelist_num_of_items(2 * L1_CACHE_BYTES))
+		nents = freelist_num_of_items(2 * L1_CACHE_BYTES);
 	nents = roundup_pow_of_two(nents);
 	while (nents * cpus < nrecords) {
 		nents = nents << 1;
