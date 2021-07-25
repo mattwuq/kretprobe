@@ -73,13 +73,16 @@ struct rs_taskitem_percpu {
 	struct task_struct *task;
 	struct hrtimer hrtimer;
 	struct tasklet_struct tasklet;
-	atomic_long_t nhits;
-	atomic_long_t nmiss;
+	unsigned long nhits;
+	unsigned long nmiss;
+	int           started;
+	char          dummy[64];
 } ____cacheline_aligned_in_smp g_rs_tasks[RS_NR_CPUS];
 
 static ktime_t g_rs_hrt_cycle;
 static atomic_t g_rs_ncpus;
 static atomic_t g_rs_ntasks;
+struct completion g_rs_task_exec;
 struct completion g_rs_task_exit;
 static int g_rs_task_started;
 static int g_rs_task_stop;
@@ -96,14 +99,20 @@ static long threads  = 1;
 static int  preempt  = 0;
 static int  max = 0;
 static int  bulk = 1;
+static int  numa = 1;
+static int  stride=2;
+static int  ncpus=0;
 
 module_param(cycleus,  long, S_IRUSR|S_IRGRP|S_IROTH);
 module_param(hrtimer,  long, S_IRUSR|S_IRGRP|S_IROTH);
 module_param(interval, long, S_IRUSR|S_IRGRP|S_IROTH);
 module_param(threads,  long, S_IRUSR|S_IRGRP|S_IROTH);
 module_param(max,      int,  S_IRUSR|S_IRGRP|S_IROTH);
+module_param(numa,     int,  S_IRUSR|S_IRGRP|S_IROTH);
 module_param(bulk,     int,  S_IRUSR|S_IRGRP|S_IROTH);
 module_param(preempt,  int,  S_IRUSR|S_IRGRP|S_IROTH);
+module_param(stride,   int,  S_IRUSR|S_IRGRP|S_IROTH);
+module_param(ncpus,    int,  S_IRUSR|S_IRGRP|S_IROTH);
 
 int *g_freelist_items = NULL;
 
@@ -230,9 +239,6 @@ static struct freelist_node *rs_ring_pop(void)
 			else
 				printk("node %px ud: %d was taken.\n", ri, id);
 		}
-		atomic_long_inc(&g_rs_tasks[raw_smp_processor_id()].nhits);
-	} else {
-		atomic_long_inc(&g_rs_tasks[raw_smp_processor_id()].nmiss);
 	}
 	put_cpu();
 	return ri;
@@ -287,8 +293,12 @@ static int rs_task_exec(void *arg)
 {
         struct freelist_node  *stack[64] = {0};
 	struct freelist_node **nodes = NULL;
-        int nns = 0;
-	int rc = atomic_inc_return(&g_rs_ntasks);
+	struct rs_taskitem_percpu *ti;
+	unsigned nhits =0, nmiss = 0;
+        int nns = 0, rc, cpu = (int)(long)arg;
+
+	ti = (void *)&g_rs_tasks[cpu];
+	ti->started = 1;
 
         if (bulk > 64) {
 	        nodes = kzalloc(sizeof(void *) * bulk, GFP_KERNEL);
@@ -303,16 +313,16 @@ static int rs_task_exec(void *arg)
                 nodes = stack;
         }
 
-	if (rc == 1) {
-		g_rs_ns_start = ktime_get_ns();
-		WRITE_ONCE(g_rs_task_started, 1);
-	} else if (rc > threads)
-		goto quit;
+	do {
+		if (kthread_should_stop() || g_rs_task_stop)
+			goto quit;
+	} while (!wait_for_completion_timeout(&g_rs_task_exec, 10));
 
-	// kthread_bind_mask(current, cpu_online_mask);
+	rc = atomic_inc_return(&g_rs_ntasks);
+	if (rc < threads)
+		complete(&g_rs_task_exec);
 
 	while (!kthread_should_stop()) {
-
 		int n;
 
 		if (g_rs_task_stop)
@@ -323,98 +333,128 @@ static int rs_task_exec(void *arg)
 		if (cycleus)
 			rs_usleep(cycleus);
 		for (n = 0; n < nns; n++) {
-			if (nodes[n])
+			if (nodes[n]) {
+				nhits++;
 				rs_ring_push(nodes[n]);
+			} else {
+				nmiss++;
+			}
 		}
 	}
 
-quit:
+	ti->nhits = nhits;
+	ti->nmiss = nmiss;
 	if (atomic_dec_and_test(&g_rs_ntasks)) {
 		g_rs_ns_stop = ktime_get_ns();
 		complete(&g_rs_task_exit);
 	}
 
+quit:
 	if (nodes && nodes != stack)
 		kfree(nodes);
 
+	mutex_lock(&g_rs_task_mutex);
+	ti->task = NULL;
+	ti->started = 0;
+	mutex_unlock(&g_rs_task_mutex);
+
+	do_exit(0);
 	return 0;
 }
 
 static int rs_cpu_online(unsigned int cpu)
 {
-	struct task_struct *thread;
-	int rc = 0;
-
-	if (g_rs_tasks[cpu].task != NULL)
-		return 0;
-
-	mutex_lock(&g_rs_task_mutex);
-	thread = kthread_create_on_node(rs_task_exec,
-					(void *) (long)cpu,
-					cpu_to_node(cpu),
-					QUEUE_METHOD);
-	if (IS_ERR(thread)) {
-		rc = PTR_ERR(thread);
-		goto errorout;
-	}
-
-	g_rs_tasks[cpu].task = thread;
-	// kthread_bind(thread, cpu);
 	atomic_inc(&g_rs_ncpus);
-
 	tasklet_init(&g_rs_tasks[cpu].tasklet, rs_tasklet_work,
 	(unsigned long)&g_rs_tasks[cpu].tasklet);
 	rs_start_hrtimer(&g_rs_tasks[cpu].hrtimer);
 
-errorout:
-	mutex_unlock(&g_rs_task_mutex);
-	return rc;
+	return 0;
 }
 
 static int rs_cpu_offline(unsigned int cpu)
 {
-	struct task_struct *thread = NULL;
-
-	if (!g_rs_tasks[cpu].task)
-		return 0;
-
 	rs_stop_hrtimer(&g_rs_tasks[cpu].hrtimer);
 	tasklet_kill(&g_rs_tasks[cpu].tasklet);
-	mutex_lock(&g_rs_task_mutex);
-	thread = g_rs_tasks[cpu].task;
-	g_rs_tasks[cpu].task = NULL;
-	mutex_unlock(&g_rs_task_mutex);
-
-	if (thread)
-		kthread_stop(thread);
 	return 0;
+}
+
+struct task_struct *rs_start_thread(int cpu)
+{
+	struct task_struct *thread;
+	thread = kthread_create_on_node(rs_task_exec,
+					(void *) (long)cpu,
+					cpu_to_node(cpu),
+					QUEUE_METHOD);
+	if (IS_ERR(thread))
+		return NULL;
+
+	kthread_bind(thread, cpu);
+	// kthread_bind_mask(current, cpu_online_mask);
+	wake_up_process(thread);
+
+	return thread;
 }
 
 static void rs_start_tasks(void)
 {
-        int i;
+        int i, n = 0, cpus = ncpus;
+	unsigned long node = 0;
 
-        g_rs_ns_start = ktime_get_ns();
-        for (i = 0 ; i < RS_NR_CPUS; i++) {
-                if (!g_rs_tasks[i].task)
-                        break;
-                get_task_struct(g_rs_tasks[i].task);
-                wake_up_process(g_rs_tasks[i].task);
-        }
+	mutex_lock(&g_rs_task_mutex);
+	if (!numa) {
+		int s;
+		for (s = stride; s > 0 && n < threads; s--) {
+			for (i = cpus + s - 1 - stride; i >= 0 && n < threads; i-=stride) {
+				while (!g_rs_tasks[i].task) {
+               				g_rs_tasks[i].task = rs_start_thread(i);
+					if (g_rs_tasks[i].task)
+						n++;
+				}
+			}
+		}
+	} else {
+		while (n < threads) {
+			for (i = cpus - 1 ; i >= 0 && n < threads; i--) {
+				if (g_rs_tasks[i].task) {
+					if (i == cpus - 1)
+						cpus--;
+					continue;
+				}
+				if (0 == (node & (1 << cpu_to_node(i)))) {
+					node |= (1 << cpu_to_node(i));
+					if (hweight_long(node) == nr_online_nodes)
+						node = 0;
+					while (!g_rs_tasks[i].task) {
+						g_rs_tasks[i].task = rs_start_thread(i);
+						if (g_rs_tasks[i].task)
+							n++;
+					}
+				}
+			}
+		}
+	}
+	mutex_unlock(&g_rs_task_mutex);
+
+	g_rs_ns_start = ktime_get_ns();
+	WRITE_ONCE(g_rs_task_started, 1);
+	complete(&g_rs_task_exec);
 }
+
 
 static void rs_stop_tasks(void)
 {
 	int i;
-	g_rs_task_stop = 1;
 
+	g_rs_task_stop = 1;
+	mutex_lock(&g_rs_task_mutex);
 	for (i = 0 ; i < RS_NR_CPUS; i++) {
 		if (g_rs_tasks[i].task) {
-			kthread_stop(g_rs_tasks[i].task);
-			put_task_struct(g_rs_tasks[i].task);
+			complete(&g_rs_task_exec);
 			g_rs_tasks[i].task = NULL;
 		}
 	}
+	mutex_unlock(&g_rs_task_mutex);
 	wait_for_completion(&g_rs_task_exit);
 }
 
@@ -438,6 +478,15 @@ static void __init rs_check_params(void)
 		threads = 1;
 	if (threads > num_online_cpus())
 		threads = num_online_cpus();
+
+	if (nr_online_nodes <= 1)
+		numa = 0;
+	if (!numa) {
+		if (!ncpus)
+			ncpus = num_possible_cpus();
+		if (!stride)
+			stride = 2;
+	}
 }
 
 static void rs_cleanup(void)
@@ -449,11 +498,15 @@ static void rs_cleanup(void)
 	rs_stop_tasks();
 	rs_fini_ring();
 	for (i = 0; i < RS_NR_CPUS; i++) {
-		nhits += atomic_long_read(&g_rs_tasks[i].nhits);
-		nmiss += atomic_long_read(&g_rs_tasks[i].nmiss);
+		nhits += g_rs_tasks[i].nhits;
+		nmiss += g_rs_tasks[i].nmiss;
+		if (g_rs_tasks[i].nhits) {
+			printk("task %d: nhits: %ld nmiss: %ld\n", i,
+				g_rs_tasks[i].nhits, g_rs_tasks[i].nmiss);
+		}
 	}
-	printk("%s:\tthreads:%2lu preempt:%d max:%4d cycle:%2lu bulk:%d delta: %llu  hits: %13llu missed: %llu\n", 
-		QUEUE_METHOD, threads, preempt, max, cycleus, bulk, g_rs_ns_stop - g_rs_ns_start, nhits, nmiss);
+	printk("%s:\tnuma:%u threads:%2lu preempt:%d max:%4d cycle:%2lu bulk:%d delta: %llu  hits: %13llu missed: %llu\n",
+		QUEUE_METHOD, numa, threads, preempt, max, cycleus, bulk, g_rs_ns_stop - g_rs_ns_start, nhits, nmiss);
 }
 
 static int __init rs_mod_init(void)
@@ -470,6 +523,7 @@ static int __init rs_mod_init(void)
 
 	/* starting hrtimer */
 	g_rs_hrt_cycle = ktime_set(0, hrtimer);
+	init_completion(&g_rs_task_exec);
 	init_completion(&g_rs_task_exit);
 	g_rs_cpuhp = cpuhp_setup_state(CPUHP_AP_ONLINE_DYN, "krpperf",
 					rs_cpu_online, rs_cpu_offline);
@@ -481,7 +535,7 @@ static int __init rs_mod_init(void)
 	/* starting percpu tasks */
 	rs_start_tasks();
 
-	msleep(interval * 1000);
+	msleep((interval + 1) * 1000);
 	rs_cleanup();   
 	return -1;
 
