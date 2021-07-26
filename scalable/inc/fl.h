@@ -139,13 +139,13 @@ static inline struct freelist_node *freelist_try_get(struct freelist_head *list)
 	return NULL;
 }
 
-static inline void freelist_destroy(struct freelist_head *list, void *context, int (*release)(void *, void *))
+static inline void freelist_destroy(struct freelist_head *list, void *context, int (*release)(void *, void *, int, int))
 {
 	while (list->head) {
 		struct freelist_node *item = list->head;
 		list->head = item->next;
 		if (release)
-			release(context, item);
+			release(context, item, 1, 1);
 	}
 }
 

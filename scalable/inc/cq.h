@@ -83,7 +83,7 @@ static inline struct freelist_node *freelist_try_get(struct freelist_head *list)
     return NULL;
 }
 
-static inline void freelist_destroy(struct freelist_head *list, void *context, int (*release)(void *, void *))
+static inline void freelist_destroy(struct freelist_head *list, void *context, int (*release)(void *, void *, int, int))
 {
 
     struct freelist_node *item;
@@ -91,7 +91,7 @@ static inline void freelist_destroy(struct freelist_head *list, void *context, i
     do {
        item = freelist_try_get(list);
        if (item && release)
-           release(context, item);
+           release(context, item, 1, 1);
     } while(item);
 
     if (list->fh_ents) {

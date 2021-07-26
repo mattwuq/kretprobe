@@ -255,7 +255,7 @@ static inline struct pc_freelist_node *pc_freelist_pop(struct pc_freelist *s)
 #define freelist_try_get  pc_freelist_pop
 
 static inline void freelist_destroy(struct freelist_head *s, void *context,
-                                    int (*release)(void *, void *))
+                                    int (*release)(void *, void *, int, int))
 {
 	struct pc_freelist_node *node;
 	int cpu;
@@ -267,7 +267,7 @@ static inline void freelist_destroy(struct freelist_head *s, void *context,
 		while ((node = head->first)) {
 			head->first = node->next;
 			if (release)
-				release(context, node);
+				release(context, node, 1, 1);
 		}
 		// raw_spin_unlock(&head->lock);
 	}
@@ -276,7 +276,7 @@ static inline void freelist_destroy(struct freelist_head *s, void *context,
 	while ((node = s->extralist.first)) {
 		s->extralist.first = node->next;
 		if (release)
-			release(context, node);
+			release(context, node, 1, 1);
 	}
 	//raw_spin_unlock(&s->extralist.lock);
 

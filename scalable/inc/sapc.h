@@ -91,11 +91,11 @@ static inline int freelist_init_slots(struct freelist_head *list)
 		memset(slot, 0, size);
 		slot->fs_size = list->fh_nents;
 		slot->fs_mask = slot->fs_size - 1;
-		slot->fs_ents = (void *)((char *)slot + sizeof(struct freelist_slot));
-		slot->fs_ages = (void *)&slot->fs_ents[slot->fs_size];
+		slot->fs_ages = (void *)((char *)slot + sizeof(struct freelist_slot));
+		slot->fs_ents = (void *)&slot->fs_ages[slot->fs_size];
 		// printk("\tents: %px  ages: %px\n", slot->fs_ents, slot->fs_ages);
 		for (j = 0; record && j < nrecords; j++) {
-			slot->fs_ents[slot->fs_tail] = (void *)&slot->fs_ages[slot->fs_size] +
+			slot->fs_ents[slot->fs_tail] = (void *)&slot->fs_ents[slot->fs_size] +
 						       j * record;
 			slot->fs_ages[slot->fs_tail] = slot->fs_tail;
 			slot->fs_tail++;
@@ -277,7 +277,7 @@ static inline struct freelist_node *freelist_try_get(struct freelist_head *s)
 }
 
 static inline void freelist_destroy(struct freelist_head *s, void *context,
-                                    int (*release)(void *, void *))
+                                    int (*release)(void *, void *, int, int))
 {
 	uint32_t i;
 
@@ -289,13 +289,13 @@ static inline void freelist_destroy(struct freelist_head *s, void *context,
 		do {
 			node = __freelist_try_get_percpu(s->fh_slots[i]);
 			if (node && release)
-				release(context, node);
+				release(context, node, 1, 1);
 		} while (node);
 	}
 
 	if (s->fh_bulk_buffer) {
 		if (release)
-			release(context, s->fh_bulk_buffer);
+			release(context, s->fh_bulk_buffer, 1, 0);
 		s->fh_bulk_buffer = NULL;
 	}
 

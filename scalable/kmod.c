@@ -21,6 +21,11 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 
+#ifndef arch_cmpxchg_release
+#define arch_cmpxchg_release arch_cmpxchg
+#define arch_cmpxchg_acquire arch_cmpxchg
+#endif
+
 #ifndef try_cmpxchg
 #define try_cmpxchg(_ptr, _oldp, _new) \
 ({ \
@@ -102,6 +107,7 @@ static int  bulk = 1;
 static int  numa = 1;
 static int  stride=2;
 static int  ncpus=0;
+static int  alloc=0;
 
 module_param(cycleus,  long, S_IRUSR|S_IRGRP|S_IROTH);
 module_param(hrtimer,  long, S_IRUSR|S_IRGRP|S_IROTH);
@@ -113,6 +119,7 @@ module_param(bulk,     int,  S_IRUSR|S_IRGRP|S_IROTH);
 module_param(preempt,  int,  S_IRUSR|S_IRGRP|S_IROTH);
 module_param(stride,   int,  S_IRUSR|S_IRGRP|S_IROTH);
 module_param(ncpus,    int,  S_IRUSR|S_IRGRP|S_IROTH);
+module_param(alloc,    int,  S_IRUSR|S_IRGRP|S_IROTH);
 
 int *g_freelist_items = NULL;
 
@@ -124,13 +131,37 @@ int rs_init_ring(int maxactive)
 	if (!g_freelist_items)
 		return -ENOMEM;
 
+#ifdef _PERCPU_OBJECT_POOL_H_
+        if (alloc == 2) {
+		if (objpool_init(&g_rs_freelist, maxactive, 32, 0, GFP_KERNEL)) {
+			printk("rs_init_ring: failed to init freelist.\n");
+			return -ENOMEM;
+		}
+		for (i = 0; i < maxactive; i++)
+			g_freelist_items[i] = 1;
+		return 0;
+	}
+#endif
 	if (freelist_init(&g_rs_freelist, maxactive)) {
 		printk("rs_init_ring: failed to init freelist.\n");
 		return -ENOMEM;
 	}
 
+#ifdef _PERCPU_OBJECT_POOL_H_
+        if (alloc == 3) {
+		void *p = kzalloc(32 * maxactive, GFP_KERNEL);
+		if (!p)
+			return -ENOMEM;
+		printk("buffer: %px allocated.\n", p);
+		if (objpool_populate(&g_rs_freelist, p, 32 * maxactive, 28))
+			return -ENOMEM;
+		for (i = 0; i < maxactive; i++)
+			g_freelist_items[i] = 1;
+		return 0;
+	}
+#endif
 	for (i = 0; i < maxactive; i++) {
-		if (strstr(QUEUE_METHOD, "fl") || 0 == strcmp(QUEUE_METHOD, "pc")) {
+		if (alloc || strstr(QUEUE_METHOD, "fl") || 0 == strcmp(QUEUE_METHOD, "pc")) {
 			struct freelist_node *ri;
 			ri = kzalloc(sizeof(struct freelist_node) + 16, GFP_KERNEL);
 			if (ri == NULL)
@@ -149,16 +180,21 @@ int rs_init_ring(int maxactive)
 		}
 	}
 
-    return 0;
+	return 0;
 }
 
-static int release_ri(void *context, void *node)
+static int release_ri(void *context, void *node, int user, int element)
 {
 	struct freelist_node *ri = node;
 	int id;
 
-	if (strstr(QUEUE_METHOD, "fl") || 0 == strcmp(QUEUE_METHOD, "pc")) {
+	if (!element)
+		goto errorout;
+
+	if (alloc || strstr(QUEUE_METHOD, "fl") || 0 == strcmp(QUEUE_METHOD, "pc")) {
 		id = ri->id - 1;
+		if (alloc > 1)
+			node = NULL;
 	} else {
 		id = (int)(((void *)-1) - (void *)node);
 		node = NULL;
@@ -173,10 +209,16 @@ static int release_ri(void *context, void *node)
 	} else {
 		printk("wrong node: %px id: %d\n", node, id);
 	}
-	if (node)
-		kfree(node);
 	if (context)
 		(*((int *)context))++;
+errorout:
+
+	if (node)
+		kfree(node);
+	if (node && element)
+		printk("node: %px released.\n", node);
+	else if (node && user)
+		printk("buffer: %px released.\n", node);
 	return 0;
 }
 
@@ -221,12 +263,16 @@ static int rs_ring_push(struct freelist_node *ri)
 	return rc;
 }
 
-static struct freelist_node *rs_ring_pop(void)
+static struct freelist_node *rs_ring_pop(int nested)
 {
 	struct freelist_node *ri;
 
 	get_cpu();
+#ifdef _PERCPU_OBJECT_POOL_H_
+	ri = objpool_pop_nested(&g_rs_freelist);
+#else
 	ri = freelist_try_get(&g_rs_freelist);
+#endif
 	if (ri) {
 		int id = (int)(((void *)-1) - (void *)ri);
 		if (id < 0 || id >= max)
@@ -248,7 +294,7 @@ void rs_tasklet_work(unsigned long data)
 {
 	if (g_rs_task_stop) {
 	} else if (preempt) {
-		struct freelist_node *ri = rs_ring_pop();
+		struct freelist_node *ri = rs_ring_pop(1);
 		rs_ring_push(ri);
 	}
 
@@ -329,7 +375,7 @@ static int rs_task_exec(void *arg)
 			break;
 
 		for (n = 0; n < nns; n++)
-			nodes[n] = rs_ring_pop();
+			nodes[n] = rs_ring_pop(0);
 		if (cycleus)
 			rs_usleep(cycleus);
 		for (n = 0; n < nns; n++) {
@@ -487,6 +533,15 @@ static void __init rs_check_params(void)
 		if (!stride)
 			stride = 2;
 	}
+
+#ifdef _PERCPU_OBJECT_POOL_H_
+	if (alloc < 0)
+		alloc = 0;
+	if (alloc > 3)
+		alloc = 3;
+#else
+	alloc = 0;
+#endif
 }
 
 static void rs_cleanup(void)

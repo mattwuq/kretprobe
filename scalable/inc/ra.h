@@ -98,7 +98,7 @@ static inline struct freelist_node *freelist_try_get(struct freelist_head *list)
     return node;
 }
 
-static inline void freelist_destroy(struct freelist_head *list, void *context, int (*release)(void *, void *))
+static inline void freelist_destroy(struct freelist_head *list, void *context, int (*release)(void *, void *, int, int))
 {
     uint32_t i;
 
@@ -108,7 +108,7 @@ static inline void freelist_destroy(struct freelist_head *list, void *context, i
         while (item) {
             if (try_cmpxchg_release(&list->fh_ents->ents[slot].node, &item, NULL)) {
                 if (release)
-                    release(context, item);
+                    release(context, item, 1, 1);
                 break;
             }
         }
