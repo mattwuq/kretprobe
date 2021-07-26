@@ -1,0 +1,17 @@
+echo # bash ./test krp_insts=8
+killall mprotect
+dmesg -c > /dev/null
+echo $1; insmod ./mp.ko $1; lsmod | grep mp
+vmstat 1 10
+
+for i in $(seq 20); do
+    ./mprotect c &
+    sleep 1; ps -efa | grep mprotect | grep -v grep | wc -l
+    pushd /BUILD/linux-5.13rc/tools/perf
+    ./perf stat -a -I 10000 -e syscalls:sys_enter_mprotect vmstat 1 35
+    popd
+done
+
+killall mprotect
+rmmod mp
+dmesg -c

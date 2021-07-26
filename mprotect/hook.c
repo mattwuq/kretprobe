@@ -39,15 +39,30 @@ struct kretprobe kr[] = {
         /* .maxactive = 32, */
     },
     {
-        .kp.symbol_name = "ext4_file_write_iter",
+        .kp.symbol_name = "ext4_file_read_iter",
         .data_size = 16,
         .handler = generic_ret_handler,
         .entry_handler = generic_ent_handler,
         /* .maxactive = 32, */
     },
+    {
+        .kp.symbol_name = "__sys_listen",
+        .data_size = 16,
+        .handler = generic_ret_handler,
+        .entry_handler = generic_ent_handler,
+        /* .maxactive = 32, */
+    },
+    {
+        .kp.symbol_name = "vfs_read",
+        .data_size = 16,
+        .handler = generic_ret_handler,
+        .entry_handler = generic_ent_handler,
+        /* .maxactive = 32, */
+    },
+
 };
 
-struct kretprobe *krs[] = {&kr[0], &kr[1]};
+struct kretprobe *krs[] = {&kr[0], &kr[1], &kr[2], &kr[3]};
 
 static int reg_kprobe = 0;
 static int reg_kretprobe = 1;
@@ -71,7 +86,7 @@ static int __init kprobe_init(void)
     }
     if (reg_kretprobe) {
         kr[0].maxactive = kr[1].maxactive = krp_insts;
-        ret = register_kretprobes(krs, 2);
+        ret = register_kretprobes(krs, 4);
         if (ret < 0) {
             printk(KERN_DEBUG "register_kretprobe failed, returned %d\n", ret);
             return ret;
@@ -89,7 +104,7 @@ static void __exit kprobe_exit(void)
     }
 
     if (reg_kretprobe) {
-        unregister_kretprobes(krs, 2);
+        unregister_kretprobes(krs, 4);
         printk(KERN_DEBUG "kretprobe unregistered\n");
     }
 }
