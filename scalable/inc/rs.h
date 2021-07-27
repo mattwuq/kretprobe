@@ -210,14 +210,28 @@ static inline int __objpool_init_percpu_slots(struct objpool_head *oh)
 		os->os_mask = os->os_size - 1;
 		ages = SLOT_AGES(os);
 		ents = SLOT_ENTS(os);
+
+		/*
+		 * start from 2nd round to avoid conflict of 1st item.
+		 * we assume that the head item is ready for retrieval
+		 * iff head is equal to ages[head & mask]. but ages is
+		 * initialized as 0, so in view of the caller of pop(),
+		 * the 1st item (0th) is always ready, but fact could
+		 * be: push() is stalled before the final update, thus
+		 * the item being inserted will be lost forever.
+		 */
+		os->os_head = os->os_tail = oh->oh_nents;
+
 		for (j = 0; oh->oh_in_slot && j < nobjs; j++) {
+			uint32_t it = os->os_tail  & os->os_mask;
 			struct freelist_node *node;
-			ents[os->os_tail] = SLOT_OBJS(os) + j * objsz;
-			ages[os->os_tail] = os->os_tail;
 			node = (void *)ents[os->os_tail];
 			node->id = ++id;
+			ents[it] = SLOT_OBJS(os) + j * objsz;
+			ages[it] = os->os_tail;
 			os->os_tail++;
 		}
+
 		oh->oh_slots[i] = os;
 		oh->oh_sz_slots[i] = size;
 	}
@@ -560,14 +574,14 @@ static inline void *objpool_pop_nested(struct objpool_head *oh)
 }
 
 /* whether this object is from user buffer (batched adding) */
-int __objpool_is_userobj(void *obj, struct objpool_head *oh)
+static inline int __objpool_is_userobj(void *obj, struct objpool_head *oh)
 {
 	return (obj && obj >= oh->oh_batch_user &&
 		obj < oh->oh_batch_user + oh->oh_batch_size);
 }
 
 /* whether this object is pre-allocated with percpu slots */
-int __objpool_is_embeded(void *obj, struct objpool_head *oh)
+static inline int __objpool_is_embeded(void *obj, struct objpool_head *oh)
 {
 	uint32_t i;
 	for (i = 0; i < oh->oh_ncpus; i++) {
