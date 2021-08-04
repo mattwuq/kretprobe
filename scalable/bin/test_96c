@@ -1,0 +1,52 @@
+dmesg -c > /dev/null
+echo preempt=0 cycleus=0 bulk=1
+for l in 96 128 192; do
+    for j in 1 2 4 6 8 12 16 24 32 48 64 80 96; do
+        for i in fl saca sapc pc flpc rs aq; do
+            echo insmod interval=10 threads=$j cycleus=0 max=$l preempt=0 bulk=1 krp_$i.ko > /dev/kmsg
+            for k in 1 2 3 4 5; do
+                insmod krp_$i.ko interval=10 threads=$j cycleus=0 max=$l preempt=0 bulk=1
+            done
+            dmesg -c
+        done
+    done
+done
+
+echo preempt=0 cycleus=0 max=1536 bulk=1/2/4/8
+for l in 1 2 4 8; do
+    for j in 1 2 4 6 8 12 16 24 32 48 64 80 96; do
+        for i in fl saca sapc pc flpc rs aq; do
+            echo insmod interval=10 threads=$j cycleus=0 max=1536 preempt=0 bulk=$l krp_$i.ko > /dev/kmsg
+            for k in 1 2 3 4 5; do
+                insmod krp_$i.ko interval=10 threads=$j cycleus=0 max=1536 preempt=0 bulk=$l
+            done
+            dmesg -c
+        done
+    done
+done
+
+echo preempt=1 cycleus=1 max=1536 bulk=1/2/4/8
+for l in 1 2 4 8; do
+    for j in 1 2 4 6 8 12 16 24 32 48 64 80 96; do
+        for i in fl saca sapc pc flpc rs aq; do
+            echo insmod interval=10 threads=$j cycleus=1 max=1536 preempt=1 bulk=$l krp_$i.ko > /dev/kmsg
+            for k in 1 2 3 4 5; do
+                insmod krp_$i.ko interval=10 threads=$j cycleus=1 max=1536 preempt=1 bulk=$l hrtimer=10000
+            done
+            dmesg -c
+        done
+    done
+done
+
+echo preempt=1 cycleus=0 bulk=1
+for l in 96 128 192; do
+    for j in 1 2 4 6 8 12 16 24 32 48 64 80 96; do
+        for i in fl saca sapc pc flpc rs aq; do
+            echo insmod interval=10 threads=$j cycleus=0 max=$l preempt=1 bulk=1 krp_$i.ko > /dev/kmsg
+            for k in 1 2 3 4 5; do
+                insmod krp_$i.ko interval=10 threads=$j cycleus=0 max=$l preempt=1 bulk=1 hrtimer=10000
+            done
+            dmesg -c
+        done
+    done
+done

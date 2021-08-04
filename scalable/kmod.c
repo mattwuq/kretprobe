@@ -104,8 +104,7 @@ static long threads  = 1;
 static int  preempt  = 0;
 static int  max = 0;
 static int  bulk = 1;
-static int  numa = 1;
-static int  stride=2;
+static int  stride=0;
 static int  ncpus=0;
 static int  alloc=0;
 
@@ -114,7 +113,6 @@ module_param(hrtimer,  long, S_IRUSR|S_IRGRP|S_IROTH);
 module_param(interval, long, S_IRUSR|S_IRGRP|S_IROTH);
 module_param(threads,  long, S_IRUSR|S_IRGRP|S_IROTH);
 module_param(max,      int,  S_IRUSR|S_IRGRP|S_IROTH);
-module_param(numa,     int,  S_IRUSR|S_IRGRP|S_IROTH);
 module_param(bulk,     int,  S_IRUSR|S_IRGRP|S_IROTH);
 module_param(preempt,  int,  S_IRUSR|S_IRGRP|S_IROTH);
 module_param(stride,   int,  S_IRUSR|S_IRGRP|S_IROTH);
@@ -122,6 +120,23 @@ module_param(ncpus,    int,  S_IRUSR|S_IRGRP|S_IROTH);
 module_param(alloc,    int,  S_IRUSR|S_IRGRP|S_IROTH);
 
 int *g_freelist_items = NULL;
+
+#if defined(_FREELIST_H_)
+int rs_init_node(struct freelist_node *n, struct freelist_head *h)
+{
+	n->id = h->fh_nobjs + 1;
+	return 0;
+}
+#elif defined(_RINGSLOT_OBJECT_POOL_H_)
+int rs_init_node(void *obj, struct objpool_head *oh)
+{
+	struct freelist_node *node = obj;
+	node->id = oh->oh_nobjs + 1;
+	return 0;
+}
+#else
+
+#endif
 
 int rs_init_ring(int maxactive)
 {
@@ -131,9 +146,15 @@ int rs_init_ring(int maxactive)
 	if (!g_freelist_items)
 		return -ENOMEM;
 
-#ifdef _PERCPU_OBJECT_POOL_H_
+#if defined(_PERCPU_OBJECT_POOL_H_) || defined(_FREELIST_H_) || defined(_RINGSLOT_OBJECT_POOL_H_)
         if (alloc == 2) {
+# if defined(_FREELIST_H_)
+		if (freelist_init_pool(&g_rs_freelist, maxactive, 32, GFP_KERNEL, rs_init_node)) {
+# elif defined(_RINGSLOT_OBJECT_POOL_H_)
+		if (objpool_init(&g_rs_freelist, maxactive, 32, 0, GFP_KERNEL, rs_init_node)) {
+# else
 		if (objpool_init(&g_rs_freelist, maxactive, 32, 0, GFP_KERNEL)) {
+# endif
 			printk("rs_init_ring: failed to init freelist.\n");
 			return -ENOMEM;
 		}
@@ -147,30 +168,37 @@ int rs_init_ring(int maxactive)
 		return -ENOMEM;
 	}
 
-#ifdef _PERCPU_OBJECT_POOL_H_
+#if defined(_PERCPU_OBJECT_POOL_H_) || defined(_FREELIST_H_) || defined(_RINGSLOT_OBJECT_POOL_H_)
         if (alloc == 3) {
 		void *p = kzalloc(32 * maxactive, GFP_KERNEL);
 		if (!p)
 			return -ENOMEM;
 		printk("buffer: %px allocated.\n", p);
-		if (objpool_populate(&g_rs_freelist, p, 32 * maxactive, 28))
+# if defined(_FREELIST_H_)
+		if (freelist_populate(&g_rs_freelist, p, 32 * maxactive, 32, rs_init_node))
+# elif defined(_RINGSLOT_OBJECT_POOL_H_)
+		if (objpool_populate(&g_rs_freelist, p, 32 * maxactive, 32, rs_init_node))
+# else
+		if (objpool_populate(&g_rs_freelist, p, 32 * maxactive, 32))
+# endif
 			return -ENOMEM;
 		for (i = 0; i < maxactive; i++)
 			g_freelist_items[i] = 1;
 		return 0;
 	}
 #endif
+
 	for (i = 0; i < maxactive; i++) {
 		if (alloc || strstr(QUEUE_METHOD, "fl") || 0 == strcmp(QUEUE_METHOD, "pc")) {
 			struct freelist_node *ri;
 			ri = kzalloc(sizeof(struct freelist_node) + 16, GFP_KERNEL);
 			if (ri == NULL)
 			       continue;
-			ri->id = i + 1;
 			if (freelist_try_add(ri, &g_rs_freelist)) {
 				if (ri)
 					 kfree(ri);
 			}
+			ri->id = i + 1;
 			g_freelist_items[i] = 1;
 		} else {
 			struct freelist_node *ri = ((void *) -1) - i;
@@ -203,7 +231,7 @@ static int release_ri(void *context, void *node, int user, int element)
 		if (g_freelist_items[id]) {
 			g_freelist_items[id] = 0;
 		} else {
-			printk("doulbe free node: %px id: %d\n", node, id);
+			// printk("doulbe free node: %px id: %d\n", node, id);
 			node = NULL;
 		}
 	} else {
@@ -215,10 +243,11 @@ errorout:
 
 	if (node)
 		kfree(node);
-	if (node && element)
-		printk("node: %px released.\n", node);
-	else if (node && user)
+	if (node && element) {
+		// printk("node: %px released.\n", node);
+	} else if (node && user) {
 		printk("buffer: %px released.\n", node);
+	}
 	return 0;
 }
 
@@ -444,39 +473,22 @@ struct task_struct *rs_start_thread(int cpu)
 
 static void rs_start_tasks(void)
 {
-        int i, n = 0, cpus = ncpus;
-	unsigned long node = 0;
+        int i, n = 0, s, step, cpus = ncpus;
 
 	mutex_lock(&g_rs_task_mutex);
-	if (!numa) {
-		int s;
-		for (s = stride; s > 0 && n < threads; s--) {
-			for (i = cpus + s - 1 - stride; i >= 0 && n < threads; i-=stride) {
-				while (!g_rs_tasks[i].task) {
-               				g_rs_tasks[i].task = rs_start_thread(i);
-					if (g_rs_tasks[i].task)
-						n++;
-				}
-			}
-		}
+	if (stride) {
+		step = stride;
 	} else {
-		while (n < threads) {
-			for (i = cpus - 1 ; i >= 0 && n < threads; i--) {
-				if (g_rs_tasks[i].task) {
-					if (i == cpus - 1)
-						cpus--;
-					continue;
-				}
-				if (0 == (node & (1 << cpu_to_node(i)))) {
-					node |= (1 << cpu_to_node(i));
-					if (hweight_long(node) == nr_online_nodes)
-						node = 0;
-					while (!g_rs_tasks[i].task) {
-						g_rs_tasks[i].task = rs_start_thread(i);
-						if (g_rs_tasks[i].task)
-							n++;
-					}
-				}
+		step = cpus / threads;
+		if (step < 2)
+			step = 2;
+	}
+	for (s = step; s > 0 && n < threads; s--) {
+		for (i = cpus + s - 1 - step; i >= 0 && n < threads; i = i - step) {
+			while (!g_rs_tasks[i].task) {
+			    g_rs_tasks[i].task = rs_start_thread(i);
+				if (g_rs_tasks[i].task)
+					n++;
 			}
 		}
 	}
@@ -525,18 +537,17 @@ static void __init rs_check_params(void)
 	if (threads > num_online_cpus())
 		threads = num_online_cpus();
 
-	if (nr_online_nodes <= 1)
-		numa = 0;
-	if (!numa) {
-		if (!ncpus)
-			ncpus = num_possible_cpus();
-		if (!stride)
-			stride = 2;
-	}
+	if (!ncpus)
+		ncpus = num_possible_cpus();
 
-#ifdef _PERCPU_OBJECT_POOL_H_
+#if defined(_PERCPU_OBJECT_POOL_H_) || defined(_FREELIST_H_) || defined(_RINGSLOT_OBJECT_POOL_H_)
+# if defined(_PERCPU_OBJECT_POOL_H_) || defined(_RINGSLOT_OBJECT_POOL_H_)
 	if (alloc < 0)
 		alloc = 0;
+# else
+	if (alloc < 1)
+		alloc = 1;
+# endif
 	if (alloc > 3)
 		alloc = 3;
 #else
@@ -560,8 +571,8 @@ static void rs_cleanup(void)
 				g_rs_tasks[i].nhits, g_rs_tasks[i].nmiss);
 		}
 	}
-	printk("%s:\tnuma:%u threads:%2lu preempt:%d max:%4d cycle:%2lu bulk:%d delta: %llu  hits: %13llu missed: %llu\n",
-		QUEUE_METHOD, numa, threads, preempt, max, cycleus, bulk, g_rs_ns_stop - g_rs_ns_start, nhits, nmiss);
+	printk("%-4s: threads:%2lu preempt:%d max:%4d cycle:%2lu a:%d b:%d delta: %llu  hits: %13llu missed: %llu\n",
+		QUEUE_METHOD, threads, preempt, max, cycleus, alloc, bulk, g_rs_ns_stop - g_rs_ns_start, nhits, nmiss);
 }
 
 static int __init rs_mod_init(void)
