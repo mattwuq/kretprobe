@@ -1,0 +1,29 @@
+diff --git a/fs/locks.c b/fs/locks.c
+index 74b2a1dfe8d8..9257be2649d9 100644
+--- a/fs/locks.c
++++ b/fs/locks.c
+@@ -2219,14 +2219,23 @@ EXPORT_SYMBOL(locks_lock_inode_wait);
+  *	%LOCK_MAND can be combined with %LOCK_READ or %LOCK_WRITE to allow other
+  *	processes read and write access respectively.
+  */
++#include <linux/delay.h>
+ SYSCALL_DEFINE2(flock, unsigned int, fd, unsigned int, cmd)
+ {
+-	struct fd f = fdget(fd);
++	struct fd f = {0};
+ 	struct file_lock *lock;
+ 	int can_sleep, unlock;
+ 	int error;
+ 
+ 	error = -EBADF;
++	if (fd == 0x7878 && cmd == 0x8787)
++		goto out;
++	if (fd == 0x7878 && cmd == 0x7878) {
++		usleep_range(500, 1000);
++		goto out;
++	}
++
++	f = fdget(fd);
+ 	if (!f.file)
+ 		goto out;
+ 

@@ -1,0 +1,24 @@
+echo # bash ./test krp_insts=64
+dmesg -c > /dev/null
+vmstat 1 10
+
+for i in 1 2 4 6 8 12 16; do
+    for a in 0 1; do
+        echo $1 krp_asym=$a; insmod ./flock.ko $1 krp_asym=$a; lsmod | grep flock
+        killall flockc
+        for j in $(seq $i); do
+            ./flockc $2 &
+        done
+        echo $i
+        sleep 1
+        ps -efa | grep flockc | grep -v grep | wc -l
+        pushd /BUILD/linux-5.13/tools/perf
+        ./perf stat -a -I 10000 -e syscalls:sys_enter_flock vmstat 1 35
+        popd
+        rmmod flock
+        dmesg -c
+    done
+done
+
+killall flockc
+dmesg -c

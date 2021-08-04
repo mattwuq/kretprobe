@@ -1,0 +1,3 @@
+make
+for m in 8 32 128; do bash ./testflock krp_insts=$m c 2>&1 | tee -a flock.$1.n.log; done
+for m in 8 32 128; do bash ./testflock krp_insts=$m s 2>&1 | tee -a flock.$1.s.log; done

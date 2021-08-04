@@ -1,4 +1,4 @@
-MODULE_NAME	:= mp
+MODULE_NAME	:= flock
 obj-m  += $(MODULE_NAME).o
 $(MODULE_NAME)-objs := hook.o
 
@@ -7,12 +7,12 @@ KERNELPATH:=/lib/modules/$(shell uname -r)/build
 
 all:
 	@echo "|----------------------------------|"
-	@echo "| building mprotect (kernel mode)  |"
+	@echo "| building flock (kernel mode)  |"
 	@echo "|----------------------------------|"
 	make -C $(KERNELPATH) M=$(PWD) modules
-	gcc -o ./mprotect mprotect.c
+	gcc -o ./flockc flockc.c
 	@$(RM) *.o
 
 clean:
-	rm -rf ./mprotect
+	rm -rf ./flockc
 	make -C $(KERNELPATH) M=$(PWD) clean
