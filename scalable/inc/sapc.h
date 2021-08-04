@@ -91,16 +91,25 @@ static inline int freelist_init_slots(struct freelist_head *list)
 		memset(slot, 0, size);
 		slot->fs_size = list->fh_nents;
 		slot->fs_mask = slot->fs_size - 1;
+
+		/*
+		 * start from 2nd round to avoid conflict of 1st item.
+		 * we assume that the head item is ready for retrieval
+		 * iff head is equal to ages[head & mask]. but ages is
+		 * initialized as 0, so in view of the caller of pop(),
+		 * the 1st item (0th) is always ready, but fact could
+		 * be: push() is stalled before the final update, thus
+		 * the item being inserted will be lost forever.
+		 */
+		slot->fs_head = slot->fs_tail = slot->fs_size;
+
 		slot->fs_ages = (void *)((char *)slot + sizeof(struct freelist_slot));
 		slot->fs_ents = (void *)&slot->fs_ages[slot->fs_size];
-		// printk("\tents: %px  ages: %px\n", slot->fs_ents, slot->fs_ages);
 		for (j = 0; record && j < nrecords; j++) {
 			slot->fs_ents[slot->fs_tail] = (void *)&slot->fs_ents[slot->fs_size] +
 						       j * record;
 			slot->fs_ages[slot->fs_tail] = slot->fs_tail;
 			slot->fs_tail++;
-			// printk("\trecord %u/%u: age: %u node: %px\n", j, slot->fs_tail - 1,
-			//	 slot->fs_ages[j], slot->fs_ents[j]);
 		}
 		list->fh_slots[i] = slot;
 	}
@@ -238,21 +247,26 @@ static inline struct freelist_node *__freelist_try_get_percpu(struct freelist_sl
 	uint32_t head = smp_load_acquire(&slot->fs_head);
 
 	while (head != READ_ONCE(slot->fs_tail)) {
-		uint32_t id = head & slot->fs_mask;
+		uint32_t id = head & slot->fs_mask, prev = head;
 		prefetch(&slot->fs_ents[id]);
-		if (try_cmpxchg_acquire(&slot->fs_ages[id], &head, head - 1)) {
+		if (READ_ONCE(slot->fs_ages[id]) == head){
 			struct freelist_node *node;
 			node = READ_ONCE(slot->fs_ents[id]);
-			if (!node) {
+			if (!node)
 				BUG();
-			}
-			smp_store_release(&slot->fs_head, head + 1);
-			return node;
+			/* commit and move forward head of the slot */
+			if (try_cmpxchg_release(&slot->fs_head, &head, head + 1))
+				return node;
 		}
-		/* break if it's in irq/softirq or nmi */
-		if (irq_count())
-			break;
+
+		/* re-load head from memory continue trying */
 		head = READ_ONCE(slot->fs_head);
+		/*
+		 * head stays unchanged, so it's very likely current pop()
+		 * just preempted/interrupted an ongoing push() operation
+		 */
+		if (head == prev)
+			break;
 	}
 
 	return NULL;
