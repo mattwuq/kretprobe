@@ -523,23 +523,19 @@ static inline uint32_t __objpool_cpu_prev(uint32_t cpu, uint32_t ncpus)
 static inline int objpool_push(void *obj, struct objpool_head *oh)
 {
 	int (*add_slot)(void *, struct objpool_slot *);
-	uint32_t (*cpu_next)(uint32_t, uint32_t);
 	uint32_t cpu = raw_smp_processor_id();
 
 	if (oh->oh_nobjs > oh->oh_nents)
 		add_slot = __objpool_try_add_slot;
 	else
 		add_slot = __objpool_add_slot;
-	if (cpu & 1)
-		cpu_next = __objpool_cpu_prev;
-	else
-		cpu_next = __objpool_cpu_next;
 
  	do {
 		struct objpool_slot *os = oh->oh_slots[cpu];
 		if (!add_slot(obj, os))
 			return 0;
-		cpu = cpu_next(cpu, oh->oh_ncpus);
+		if (++cpu >= oh->oh_ncpus)
+			cpu = 0;
 	} while (1);
 
 	return -ENOENT;
@@ -567,7 +563,7 @@ static inline void *__objpool_try_get_slot(struct objpool_slot *os)
 		 * but it will take much longer time than task scheduler time
 		 * slice to overflow an uint32_t
 		 */
-		if (READ_ONCE(ages[id]) == head) {
+		if (smp_load_acquire(&ages[id]) == head) {
 			struct freelist_node *node;
 			/* node must have been udpated by push() */
 			node = READ_ONCE(ents[id]);
@@ -604,22 +600,16 @@ static inline void *__objpool_try_get_slot(struct objpool_slot *os)
  */
 static inline void *objpool_pop(struct objpool_head *oh)
 {
-	uint32_t (*cpu_next)(uint32_t, uint32_t);
 	uint32_t i, cpu = raw_smp_processor_id();
 	void *obj = NULL;
-
-	/* try to decrease conflicts upon percpu slot */
-	if (cpu & 1)
-		cpu_next = __objpool_cpu_prev;
-	else
-		cpu_next = __objpool_cpu_next;
 
  	for (i = 0; i < oh->oh_ncpus; i++) {
 		struct objpool_slot *slot = oh->oh_slots[cpu];
 		obj = __objpool_try_get_slot(slot);
 		if (obj)
 			break;
-		cpu = cpu_next(cpu, oh->oh_ncpus);
+		if (++cpu >= oh->oh_ncpus)
+			cpu = 0;
 	}
 
 	return obj;
