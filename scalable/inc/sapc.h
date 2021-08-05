@@ -249,7 +249,7 @@ static inline struct freelist_node *__freelist_try_get_percpu(struct freelist_sl
 	while (head != READ_ONCE(slot->fs_tail)) {
 		uint32_t id = head & slot->fs_mask, prev = head;
 		prefetch(&slot->fs_ents[id]);
-		if (READ_ONCE(slot->fs_ages[id]) == head){
+		if (smp_load_acquire(&slot->fs_ages[id]) == head){
 			struct freelist_node *node;
 			node = READ_ONCE(slot->fs_ents[id]);
 			if (!node)
