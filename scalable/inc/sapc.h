@@ -152,9 +152,8 @@ static inline int freelist_init_scattered(struct freelist_head *list, int nrecor
 	if (nents < freelist_num_of_items(2 * L1_CACHE_BYTES))
 		nents = freelist_num_of_items(2 * L1_CACHE_BYTES);
 	nents = roundup_pow_of_two(nents);
-	while (nents * cpus < nrecords) {
+	while (nents * cpus < nrecords)
 		nents = nents << 1;
-	}
 	list->fh_ncores = cpus;
 	list->fh_record = record;
 	list->fh_nents = nents;
@@ -253,7 +252,7 @@ static inline struct freelist_node *__freelist_try_get_percpu(struct freelist_sl
 			struct freelist_node *node;
 			node = READ_ONCE(slot->fs_ents[id]);
 			if (!node)
-				BUG();
+				printk("sapc: null node.\n");
 			/* commit and move forward head of the slot */
 			if (try_cmpxchg_release(&slot->fs_head, &head, head + 1))
 				return node;
