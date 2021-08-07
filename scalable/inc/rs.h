@@ -197,10 +197,11 @@ static inline uint32_t __objpool_num_of_objs(uint32_t size)
 		        (sizeof(uint32_t) + sizeof(void *)) * (s)->os_size)
 
 /* allocate and initialize percpu slots */
-static inline int __objpool_init_percpu_slots(struct objpool_head *oh,
-                                              objpool_init_cb objinit)
+static inline int
+__objpool_init_percpu_slots(struct objpool_head *oh, uint32_t nobjs,
+                            objpool_init_cb objinit)
 {
-	uint32_t i, j, size, nobjs, objsz, nents = oh->oh_nents;
+	uint32_t i, j, size, objsz, nents = oh->oh_nents;
 
 	/* aligned object size by sizeof(void *) */
 	objsz = ALIGN(oh->oh_objsz, sizeof(void *));
@@ -210,13 +211,14 @@ static inline int __objpool_init_percpu_slots(struct objpool_head *oh,
 
 	for (i = 0; i < oh->oh_ncpus; i++) {
 		struct objpool_slot *os;
+		uint32_t n;
 
 		/* compute how many objects to be managed by this slot */
-		nobjs = oh->oh_nobjs / oh->oh_ncpus;
-		if (i < (oh->oh_nobjs % oh->oh_ncpus))
-			nobjs++;
+		n = nobjs / oh->oh_ncpus;
+		if (i < (nobjs % oh->oh_ncpus))
+			n++;
 		size = sizeof(struct objpool_slot) + sizeof(void *) * nents +
-		       sizeof(uint32_t) * nents + objsz * nobjs;
+		       sizeof(uint32_t) * nents + objsz * n;
 
 		/* decide which pool shall the slot be allocated from */
 		if (0 == i) {
@@ -252,7 +254,7 @@ static inline int __objpool_init_percpu_slots(struct objpool_head *oh,
 		 */
 		os->os_head = os->os_tail = oh->oh_nents;
 
-		for (j = 0; oh->oh_in_slot && j < nobjs; j++) {
+		for (j = 0; oh->oh_in_slot && j < n; j++) {
 			uint32_t *ages = SLOT_AGES(os);
 			void **ents = SLOT_ENTS(os);
 			void *obj = SLOT_OBJS(os) + j * objsz;
@@ -269,11 +271,9 @@ static inline int __objpool_init_percpu_slots(struct objpool_head *oh,
 			ents[ie] = obj;
 			ages[ie] = os->os_tail;
 			os->os_tail++;
+		        oh->oh_nobjs++;
 		}
 	}
-
-	if (!oh->oh_in_slot)
-		oh->oh_nobjs = 0;
 
 	return 0;
 }
@@ -345,7 +345,6 @@ static inline int objpool_init(struct objpool_head *oh, int nobjs, int objsz,
 	oh->oh_ncpus = cpus;
 	oh->oh_objsz = objsz;
 	oh->oh_nents = nents;
-	oh->oh_nobjs = nobjs;
 	oh->oh_gfp = gfp & ~__GFP_ZERO;
 
 	/* allocate array for percpu slots */
@@ -356,7 +355,7 @@ static inline int objpool_init(struct objpool_head *oh, int nobjs, int objsz,
 	oh->oh_sz_slots = (uint32_t *)&oh->oh_slots[oh->oh_ncpus];
 
 	/* initialize per-cpu slots */
-	rc = __objpool_init_percpu_slots(oh, objinit);
+	rc = __objpool_init_percpu_slots(oh, nobjs, objinit);
 	if (rc)
 		__objpool_fini_percpu_slots(oh);
 
@@ -492,22 +491,6 @@ objpool_populate(struct objpool_head *oh, void *buf, int size, int objsz,
 	return 0;
 }
 
-static inline uint32_t __objpool_cpu_next(uint32_t cpu, uint32_t ncpus)
-{
-	if (cpu == ncpus - 1)
-		return 0;
-	else
-		return (cpu + 1);
-}
-
-static inline uint32_t __objpool_cpu_prev(uint32_t cpu, uint32_t ncpus)
-{
-	if (cpu == 0)
-		return (ncpus - 1);
-	else
-		return (cpu - 1);
-}
-
 /**
  * objpool_push: reclaim the object and return back to objects pool
  *
@@ -522,18 +505,16 @@ static inline uint32_t __objpool_cpu_prev(uint32_t cpu, uint32_t ncpus)
  */
 static inline int objpool_push(void *obj, struct objpool_head *oh)
 {
-	int (*add_slot)(void *, struct objpool_slot *);
 	uint32_t cpu = raw_smp_processor_id();
 
-	if (oh->oh_nobjs > oh->oh_nents)
-		add_slot = __objpool_try_add_slot;
-	else
-		add_slot = __objpool_add_slot;
-
  	do {
-		struct objpool_slot *os = oh->oh_slots[cpu];
-		if (!add_slot(obj, os))
-			return 0;
+		if (oh->oh_nobjs > oh->oh_nents) {
+			if (!__objpool_try_add_slot(obj, oh->oh_slots[cpu]))
+				 return 0;
+		} else {
+			if (!__objpool_add_slot(obj, oh->oh_slots[cpu]))
+				return 0;
+		}
 		if (++cpu >= oh->oh_ncpus)
 			cpu = 0;
 	} while (1);
@@ -568,7 +549,7 @@ static inline void *__objpool_try_get_slot(struct objpool_slot *os)
 			/* node must have been udpated by push() */
 			node = READ_ONCE(ents[id]);
 			if (!node)
-				BUG();
+				printk("NULL node\n");
 			/* commit and move forward head of the slot */
 			if (try_cmpxchg_release(&os->os_head, &head, head + 1))
 				return node;
