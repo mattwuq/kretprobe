@@ -19,12 +19,12 @@
  *
  * With leveraging per-cpu lockless queue to mitigate hot spots of memory
  * contention, it could deliver near-linear scalability for high parallel
- * cases. The object pool are best suited for the following cases:
+ * loads. The object pool are best suited for the following cases:
  * 1) memory allocation or reclamation is prohibited or too expensive
  * 2) the objects are allocated/used/reclaimed very frequently
  *
  * Before using, you must be aware of it's limitations:
- * 1) Memory of all objects won't be freed until poll is de-allocated
+ * 1) Memory of all objects won't be freed until pool is de-allocated
  * 2) Order and fairness are not guaranteed. So some threads might stay
  *    hungry much longer than other competitors
  *
@@ -39,16 +39,16 @@
  * 1) self-managed objects
  *
  * obj_init():
- *    static int obj_init(struct freelist_node *obj, struct freelist_head *head)
+ *    static int obj_init(void *context, struct freelist_node *obj)
  *    {
  *		struct my_node *node;
- *              node = container_of(obj, struct my_node, obj);
- * 		do_init_node(node);
+ *		node = container_of(obj, struct my_node, obj);
+ * 		do_init_node(context, node);
  * 		return 0;
  *    }
  *
  * main():
- *    freelist_init(&fh, num_possible_cpus() * 4, 16, GFP_KERNEL, obj_init);
+ *    freelist_init(&fh, num_possible_cpus() * 4, 16, GFP_KERNEL, context, obj_init);
  *    <object pool initialized>
  *
  *    obj = freelist_pop(&fh);
@@ -61,11 +61,11 @@
  * 2) batced with user's buffer
  *
  * obj_init():
- *    static int obj_init(struct freelist_node *obj, struct freelist_head *head)
+ *    static int obj_init(void *context, struct freelist_node *obj)
  *    {
  *		struct my_node *node;
- *              node = container_of(obj, struct my_node, obj);
- * 		do_init_node(node);
+ *		node = container_of(obj, struct my_node, obj);
+ * 		do_init_node(context, node);
  * 		return 0;
  *    }
  *
@@ -77,9 +77,9 @@
  *    }
  *
  * main():
- *    freelist_init(&fh, num_possible_cpus() * 4, 0, GFP_KERNEL, obj_init);
+ *    freelist_init(&fh, num_possible_cpus() * 4, 0, GFP_KERNEL, 0, 0);
  *    buffer = kmalloc(size, ...);
- *    freelist_populate(&fh, buffer, size, 16, obj_init);
+ *    freelist_populate(&fh, buffer, size, 16, context, obj_init);
  *    <object pool initialized>
  *
  *    obj = freelist_pop(&fh);
@@ -87,7 +87,7 @@
  *    freelist_push(obj, &fh);
  *
  *    <object pool to be destroyed>
- *    freelist_fini(&fh, NULL, free_buf);
+ *    freelist_fini(&fh, context, free_buf);
  *
  * 3) manually added with user objects
  *
@@ -101,7 +101,7 @@
  *    }
  *
  * main():
- *    freelist_init(&fh, num_possible_cpus() * 4, 0, 0, GFP_KERNEL, NULL);
+ *    freelist_init(&fh, num_possible_cpus() * 4, 0, 0, GFP_KERNEL, 0, 0);
  *    for () {
  *      node = kmalloc(objsz, ...);
  *      do_init_node(node);
@@ -114,7 +114,7 @@
  *    freelist_push(obj, &fh);
  *
  *    <object pool to be destroyed>
- *    freelist_fini(&fh, NULL, free_obj);
+ *    freelist_fini(&fh, context, free_obj);
  */
 
 #define QUEUE_METHOD "flpc"
@@ -122,7 +122,7 @@
 #define freelist_add freelist_push
 #define freelist_try_get freelist_pop
 #define freelist_destroy freelist_fini
-#define freelist_init(head, max) freelist_init_pool(head, max, 0, GFP_KERNEL, 0)
+#define freelist_init(head, max) freelist_init_pool(head, max, 0, GFP_KERNEL, 0, 0)
 
 /*
  * common componment of every node
@@ -140,12 +140,12 @@ struct freelist_node {
  * freelist_slot: per-cpu singly linked list
  *
  * All pre-allocated objects are next to freelist_slot. Objects and
- * freelist_slot are be allocated from the memory pool local node.
+ * freelist_slot are to be allocated from the memory pool local node.
  */
 struct freelist_slot {
 	struct freelist_node   *fs_head;	/* head of percpu list */
 };
-#define SLOT_OBJS(s) (void *)((char *)(s) + sizeof(struct freelist_slot))
+#define SLOT_OBJS(s) ((void *)(s) + sizeof(struct freelist_slot))
 
 /*
  * freelist_head: object pooling metadata
@@ -154,30 +154,30 @@ struct freelist_head {
 	uint32_t                fh_objsz;	/* object & element size */
 	uint32_t                fh_nobjs;	/* total objs in freelist */
 	uint32_t                fh_ncpus;	/* num of possible cpus */
-	uint32_t		fh_in_slot:1;	/* objs alloced with slots */
+	uint32_t                fh_in_slot:1;	/* objs alloced with slots */
 	uint32_t                fh_vmalloc:1;	/* alloc from vmalloc zone */
-	gfp_t  			fh_gfp;		/* k/vmalloc gfp flags */
+	gfp_t                   fh_gfp;		/* k/vmalloc gfp flags */
 	uint32_t                fh_sz_pool;	/* user pool size in byes */
 	void                   *fh_pool;	/* user managed memory pool */
 	struct freelist_slot  **fh_slots;	/* array of percpu slots */
 	uint32_t               *fh_sz_slots;	/* size in bytes of slots */
 };
 
-typedef int (*freelist_init_node_cb)(struct freelist_node *, struct freelist_head *);
+typedef int (*freelist_init_node_cb)(void *context, struct freelist_node *);
 
 /* attach object to percpu slot */
 static inline void
 __freelist_insert_node(struct freelist_node *node, struct freelist_slot *slot)
 {
+	atomic_set_release(&node->refs, 1);
 	node->next = slot->fs_head;
 	slot->fs_head = node;
-	atomic_set_release(&node->refs, 1);
 }
 
 /* allocate and initialize percpu slots */
 static inline int
 __freelist_init_slots(struct freelist_head *head, uint32_t nobjs,
-                      freelist_init_node_cb objinit)
+                      void *context, freelist_init_node_cb objinit)
 {
 	uint32_t i, objsz, cpus = head->fh_ncpus;
 	gfp_t gfp = head->fh_gfp;
@@ -207,7 +207,7 @@ __freelist_init_slots(struct freelist_head *head, uint32_t nobjs,
 			n++;
 		s = sizeof(struct freelist_slot) + objsz * n;
 
-		/* decide which pool shall the slot be allocated from */
+		/* decide which zone shall the slot be allocated from */
 		if (0 == i) {
 			if ((gfp & GFP_ATOMIC) || s < PAGE_SIZE)
 				head->fh_vmalloc = 0;
@@ -233,7 +233,7 @@ __freelist_init_slots(struct freelist_head *head, uint32_t nobjs,
 			struct freelist_node *node;
 			node = SLOT_OBJS(slot) + j * objsz;
 			if (objinit) {
-				int rc = objinit(node, head);
+				int rc = objinit(context, node);
 				if (rc)
 					return rc;
 			}
@@ -274,6 +274,8 @@ static inline void __freelist_fini_slots(struct freelist_head *head)
  * @nojbs: total objects to be managed by this object pool
  * @ojbsz: size of an object, to be pre-allocated if objsz is not 0
  * @gfp:   gfp flags of caller's context for memory allocation
+ * @context: user context for object initialization callback
+ * @objinit: object initialization callback
  *
  * return:
  *         0 for success, otherwise error code
@@ -283,14 +285,14 @@ static inline void __freelist_fini_slots(struct freelist_head *head)
  */
 static inline int
 freelist_init_pool(struct freelist_head *head, int nobjs, int objsz, gfp_t gfp,
-                   freelist_init_node_cb objinit)
+                   void *context, freelist_init_node_cb objinit)
 {
 	memset(head, 0, sizeof(struct freelist_head));
 	head->fh_ncpus = num_possible_cpus();
 	head->fh_objsz = objsz;
 	head->fh_gfp = gfp & ~__GFP_ZERO;
 
-	if (__freelist_init_slots(head, nobjs, objinit)) {
+	if (__freelist_init_slots(head, nobjs, context, objinit)) {
 		__freelist_fini_slots(head);
 		return -ENOMEM;
 	}
@@ -331,14 +333,18 @@ freelist_add_scattered(struct freelist_node *node, struct freelist_head *head)
  *  *
  * args:
  * @oh:  object pool
- * @obj: object pointer to be pushed to object pool
+ * @buf: user buffer for pre-allocated objects
+ * @size: size of user buffer
+ * @objsz: size of object & element
+ * @context: user context for objinit callback
+ * @objinit: object initialization callback
  *
  * return:
  *     0 or error code
  */
 static inline int
 freelist_populate(struct freelist_head *head, void *buf, int size, int objsz,
-                  freelist_init_node_cb objinit)
+                  void *context, freelist_init_node_cb objinit)
 {
 	int used = 0;
 
@@ -347,13 +353,13 @@ freelist_populate(struct freelist_head *head, void *buf, int size, int objsz,
 	if (head->fh_objsz && head->fh_objsz != objsz)
 		return -EINVAL;
 
-	WARN_ON_ONCE((((unsigned long)buf) & (sizeof(void *) - 1)));
-	WARN_ON_ONCE((((uint32_t)objsz) & (sizeof(void *) - 1)));
+	WARN_ON_ONCE(((unsigned long)buf) & (sizeof(void *) - 1));
+	WARN_ON_ONCE(((uint32_t)objsz) & (sizeof(void *) - 1));
 
 	while (used + objsz <= size) {
 		struct freelist_node *node = buf + used;
 		if (objinit) {
-			int rc = objinit(node, head);
+			int rc = objinit(context, node);
 			if (rc)
 				return rc;
 		}

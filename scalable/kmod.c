@@ -122,8 +122,9 @@ module_param(alloc,    int,  S_IRUSR|S_IRGRP|S_IROTH);
 int *g_freelist_items = NULL;
 
 #if defined(_FREELIST_H_)
-int rs_init_node(struct freelist_node *n, struct freelist_head *h)
+int rs_init_node(void *context, struct freelist_node *n)
 {
+	struct freelist_head *h = context;
 	n->id = h->fh_nobjs + 1;
 	return 0;
 }
@@ -149,7 +150,7 @@ int rs_init_ring(int maxactive)
 #if defined(_PERCPU_OBJECT_POOL_H_) || defined(_FREELIST_H_) || defined(_RINGSLOT_OBJECT_POOL_H_)
         if (alloc == 2) {
 # if defined(_FREELIST_H_)
-		if (freelist_init_pool(&g_rs_freelist, maxactive, 32, GFP_KERNEL, rs_init_node)) {
+		if (freelist_init_pool(&g_rs_freelist, maxactive, 32, GFP_KERNEL, &g_rs_freelist, rs_init_node)) {
 # elif defined(_RINGSLOT_OBJECT_POOL_H_)
 		if (objpool_init(&g_rs_freelist, maxactive, 32, 0, GFP_KERNEL, rs_init_node)) {
 # else
@@ -163,7 +164,11 @@ int rs_init_ring(int maxactive)
 		return 0;
 	}
 #endif
+#if defined(_FREELIST_H_)
+	if (freelist_init_pool(&g_rs_freelist, maxactive, 0, GFP_KERNEL, 0, 0)) {
+#else
 	if (freelist_init(&g_rs_freelist, maxactive)) {
+#endif
 		printk("rs_init_ring: failed to init freelist.\n");
 		return -ENOMEM;
 	}
@@ -175,7 +180,7 @@ int rs_init_ring(int maxactive)
 			return -ENOMEM;
 		printk("buffer: %px allocated.\n", p);
 # if defined(_FREELIST_H_)
-		if (freelist_populate(&g_rs_freelist, p, 32 * maxactive, 32, rs_init_node))
+		if (freelist_populate(&g_rs_freelist, p, 32 * maxactive, 32, &g_rs_freelist, rs_init_node))
 # elif defined(_RINGSLOT_OBJECT_POOL_H_)
 		if (objpool_populate(&g_rs_freelist, p, 32 * maxactive, 32, rs_init_node))
 # else
