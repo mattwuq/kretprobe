@@ -1,53 +1,49 @@
 # kretprobe scalability improvement
 
-The original freelist is a LIFO queue based on singly linked list, which lacks
-of scalability, and thus becomes bottleneck under high workloads. freelist was
-introduced by Masami Hiramatsu's work of removing kretprobe hash lock:
-ref: https://lkml.org/lkml/2020/8/29/209.
+## Introduction
 
-Here an array-based MPMC lockless queue is proposed. The solution of bounded
-array can nicely avoid ABA issue, while freelist or circular queue etc. have
-to perform 2 CAS loops. The other advantage is that order and fairness can be
-ignored, the only concern is to retrieve kretprobe instance records as fast
-as possible, i.e. performance and correctness. Tests of kretprobe on 96-CORE
-ARM64 show the biggest gain as 466.7x of the original freelist throughput.
-The raw queue throughput can be 1,975 times of freelist. Here are the results:
+kretprobe is using freelist to manage return instances, but freelist as
+a LIFO queue based on singly linked list, scales badly and thus lowers
+throughput of kretprobed routines, especially for high parallelization.
+Here's a typical result (XEON 8260: 2 sockets/48 cores/96 threads):
 
 ```c
-Ubuntu 20.04, 5.13.0-rc6 (XEON E5-2660V3 2.4G, DDR4 2133MT/s, 10 CORES/20 THREADS):
-                1x        2x        4x        8x        10x        16x        20x        32x        40x
-freelist: 13086080  22493637  32773854  20129772   18455899   18435561   18980332   18988603   18991334	
-array   :  13144036  26059941  47449954  94517172  115856027  116414714  125692971  125553061  125685981
-
-Ubuntu 21.04 - 5.12.10 QEMU 96 CORES (HUAWEI TaiShan 2280V2  KP920 96 CORES 2.6G, DDR4 2944 MT/s):
-                  1x          2x          4x          8x          16x          24x          48x            96x           192x
-freelist: 17,233,640  10,296,664   8,095,309   6,993,545    5,050,817    4,295,283    3,382,013      2,738,050      2,743,345
-array:    19,360,905  37,395,225  56,417,463  10,020,136  209,876,209  328,940,014  632,754,916  1,277,862,473  1,169,076,739
-
+      1X       2X       4X       6X       8X      12X     16X
+10880312 18121228 23214783 13155457 11190217 10991228 9623992
+     24X      32X      48X      64X      96X     128X    192X
+ 8484455  8376786  6766684  5698349  4113405  4528009 4081401
 ```
 
-Linear scalability is still not available,  limited by the following two
-considerations:
+This patch implements a scalabe, lock-less and numa-aware object pool
+and as a result improves kretprobe to achieve near-linear scalability.
+Tests of kretprobe throughput show the biggest gain as 181.5x of the
+original freelist. The extreme tests of raw queue throughput can be up
+to 388.8 times of the original. The comparison results are the followings:
 
-1. keep it simple: best solution could be an implementation of per-cpu queues,
-   but it's not applicable for this case due to coding complexity. After all for
-   most cases the number of pre-allocated kretprobe instances (maxactive) is
-   only a small value. If not specified by user during registering, maxactive
-   is set as CPU cores or 2x when preemption is enabled
-2. keep it compact: cache-line-alignment can solve false-sharing and minimize
-   cache thrashing, but it introduces memory wasting, considering the small
-   body of structure kretprobe_instance. Secondly the performance improvement
-   of cache-line-aligned is not significant as expected
+```c
+                  1X         2X         4X         8X        16X
+freelist:  237911411  163596418   33048459   15506757   10640043
+objpool:   234799081  294086132  585290693 1164205947 2334923746
+                 24X        32X        48X        64X        96X
+freelist:    9025299    7965531    6800225    5507639    4284752
+objpool:  3508905695 1106760339 1101385147 1221763856 1211654038
+```
 
-With a pre-built kernel, further performance tuning can be done by increasing
-maxactive when registering kretprobe. Tests show 4x cores number is a fair
-choice for both performance and memory efficiency.
+The object pool is a percpu-extended version of original freelist,
+with compact memory footprints and balanced performance results for
+3 test caess: nonblockable retrieval (most kertprobe cases), bulk
+retrieval in a row (multiple-threaded blockable kretprobe), huge
+misses (preallocated objects much less than required).
 
-Huge thanks to my workmates: Chengming Zhou, Muchun Song, Yue Chen for their
-suggestions and remarks.
+Huge thanks to my workmates: Chengming Zhou, Muchun Song, Yue Chen
+for their suggestions and remarks.
 
-# Performance comparison tests:
+## kretprobe performance comparison
 
-![](./doc/kretprobe-perf-X86.png)
+![](./doc/kretprobe-perf-X86-48C-96T.png)
 
-![](./doc/kretprobe-perf-ARM64.png)
+## raw queues performance:
+
+![](./doc/queue-perf-X86-48C-96T.png)
+
+![](./doc/queue-perf-ARM64-96C.png)
